@@ -2,7 +2,7 @@
 
 /**
  * MCP Appium Server
- * Handles device interaction and automation using Appium WebDriver
+ * Handles device interaction and automation using Appium WebDriver for iOS and Android
  *
  * Tools: appium_connect, appium_disconnect, appium_status, appium_install_app, appium_launch_app,
  *        appium_close_app, find_element, find_elements, click_element, type_text, swipe, get_screenshot,
@@ -23,11 +23,25 @@ class AppiumMCPServer extends BaseMCPServer {
         super({
             name: 'mcp-appium-server',
             version: '1.0.0',
-            description: 'Device interaction and automation using Appium WebDriver',
+            description: 'Device interaction and automation using Appium WebDriver for iOS and Android',
         });
 
         this.driver = null;
         this.isConnected = false;
+        this.currentPlatform = null;
+        this.connectionConfig = null; // Store connection config for auto-reconnect
+        this.sessionTimeout = 300000; // 5 minutes default session timeout
+        this.lastActivity = Date.now();
+        
+        // Auto state capture configuration
+        this.autoStateCapture = {
+            enabled: true, // Enable by default
+            captureBeforeActions: ['click_element', 'type_text', 'swipe', 'scroll_to_element'],
+            retainCount: 5, // Keep last 5 captures
+            outputDir: './automation-state-captures',
+            lastCaptures: [] // Store recent captures for context
+        };
+        
         this.registerTools();
     }
 
@@ -35,10 +49,16 @@ class AppiumMCPServer extends BaseMCPServer {
         // Register tool schemas
         this.addTool({
             name: 'appium_connect',
-            description: 'Connect to Android device via Appium server (local or remote)',
+            description: 'Connect to iOS or Android device via Appium server (local or remote)',
             inputSchema: {
                 type: 'object',
                 properties: {
+                    platform: {
+                        type: 'string',
+                        enum: ['iOS', 'Android'],
+                        description: 'Target platform (iOS or Android)',
+                        default: 'Android',
+                    },
                     hostname: {
                         type: 'string',
                         description: 'Appium server hostname (default: localhost)',
@@ -52,24 +72,61 @@ class AppiumMCPServer extends BaseMCPServer {
                     deviceName: {
                         type: 'string',
                         description: 'Device name or ID',
-                        default: 'Android Device',
+                        default: 'Device',
                     },
                     platformVersion: {
                         type: 'string',
-                        description: 'Android platform version',
+                        description: 'Platform version (e.g., "11" for Android, "15.0" for iOS)',
                         default: '11',
                     },
                     appPackage: {
                         type: 'string',
-                        description: 'App package name (optional)',
+                        description: 'App package name (Android only, optional)',
                     },
                     appActivity: {
                         type: 'string',
-                        description: 'App activity name (optional)',
+                        description: 'App activity name (Android only, optional)',
+                    },
+                    bundleId: {
+                        type: 'string',
+                        description: 'App bundle identifier (iOS only, optional)',
                     },
                     udid: {
                         type: 'string',
                         description: 'Device UDID (optional)',
+                    },
+                    // iOS-specific capabilities
+                    usePrebuiltWDA: {
+                        type: 'boolean',
+                        description: 'Use prebuilt WebDriverAgent (iOS only, optional)',
+                    },
+                    derivedDataPath: {
+                        type: 'string',
+                        description: 'Path to derived data for WDA (iOS only, optional)',
+                    },
+                    wdaLocalPort: {
+                        type: 'string',
+                        description: 'Local port for WebDriverAgent (iOS only, optional)',
+                    },
+                    wdaConnectionTimeout: {
+                        type: 'number',
+                        description: 'WDA connection timeout in milliseconds (iOS only, optional)',
+                    },
+                    wdaStartupRetries: {
+                        type: 'number',
+                        description: 'Number of WDA startup retries (iOS only, optional)',
+                    },
+                    autoAcceptAlerts: {
+                        type: 'boolean',
+                        description: 'Automatically accept iOS alerts (iOS only, optional)',
+                    },
+                    autoDismissAlerts: {
+                        type: 'boolean',
+                        description: 'Automatically dismiss iOS alerts (iOS only, optional)',
+                    },
+                    shouldUseSingletonTestManager: {
+                        type: 'boolean',
+                        description: 'Use singleton test manager (iOS only, optional)',
                     },
                 },
             },
@@ -95,13 +152,13 @@ class AppiumMCPServer extends BaseMCPServer {
 
         this.addTool({
             name: 'appium_install_app',
-            description: 'Install an APK file on the connected device',
+            description: 'Install an app file on the connected device (APK for Android, IPA for iOS)',
             inputSchema: {
                 type: 'object',
                 properties: {
                     appPath: {
                         type: 'string',
-                        description: 'Path to the APK file to install',
+                        description: 'Path to the app file to install (APK for Android, IPA for iOS)',
                     },
                 },
                 required: ['appPath'],
@@ -110,13 +167,13 @@ class AppiumMCPServer extends BaseMCPServer {
 
         this.addTool({
             name: 'appium_launch_app',
-            description: 'Launch an app on the device by package name',
+            description: 'Launch an app on the device by package name (Android) or bundle ID (iOS)',
             inputSchema: {
                 type: 'object',
                 properties: {
                     packageName: {
                         type: 'string',
-                        description: 'Package name of the app to launch',
+                        description: 'Package name (Android) or bundle ID (iOS) of the app to launch',
                     },
                 },
                 required: ['packageName'],
@@ -131,7 +188,7 @@ class AppiumMCPServer extends BaseMCPServer {
                 properties: {
                     packageName: {
                         type: 'string',
-                        description: 'Package name of the app to close',
+                        description: 'Package name (Android) or bundle ID (iOS) of the app to close',
                     },
                 },
                 required: ['packageName'],
@@ -146,7 +203,7 @@ class AppiumMCPServer extends BaseMCPServer {
                 properties: {
                     strategy: {
                         type: 'string',
-                        enum: ['id', 'xpath', 'className', 'text', 'contentDescription', 'accessibilityId'],
+                        enum: ['id', 'xpath', 'className', 'text', 'contentDescription', 'accessibilityId', 'iosClassChain', 'iosNsPredicate'],
                         description: 'Element location strategy',
                     },
                     selector: {
@@ -171,7 +228,7 @@ class AppiumMCPServer extends BaseMCPServer {
                 properties: {
                     strategy: {
                         type: 'string',
-                        enum: ['id', 'xpath', 'className', 'text', 'contentDescription', 'accessibilityId'],
+                        enum: ['id', 'xpath', 'className', 'text', 'contentDescription', 'accessibilityId', 'iosClassChain', 'iosNsPredicate'],
                         description: 'Element location strategy',
                     },
                     selector: {
@@ -196,7 +253,7 @@ class AppiumMCPServer extends BaseMCPServer {
                 properties: {
                     strategy: {
                         type: 'string',
-                        enum: ['id', 'xpath', 'className', 'text', 'contentDescription', 'accessibilityId'],
+                        enum: ['id', 'xpath', 'className', 'text', 'contentDescription', 'accessibilityId', 'iosClassChain', 'iosNsPredicate'],
                         description: 'Element location strategy',
                     },
                     selector: {
@@ -221,7 +278,7 @@ class AppiumMCPServer extends BaseMCPServer {
                 properties: {
                     strategy: {
                         type: 'string',
-                        enum: ['id', 'xpath', 'className', 'text', 'contentDescription', 'accessibilityId'],
+                        enum: ['id', 'xpath', 'className', 'text', 'contentDescription', 'accessibilityId', 'iosClassChain', 'iosNsPredicate'],
                         description: 'Element location strategy',
                     },
                     selector: {
@@ -297,6 +354,303 @@ class AppiumMCPServer extends BaseMCPServer {
             },
         });
 
+        // iOS-specific tools
+        this.addTool({
+            name: 'handle_alert',
+            description: 'Handle iOS alerts by accepting or dismissing (iOS only)',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    action: {
+                        type: 'string',
+                        enum: ['accept', 'dismiss'],
+                        description: 'Action to take on the alert',
+                        default: 'accept',
+                    },
+                },
+            },
+        });
+
+        this.addTool({
+            name: 'press_home',
+            description: 'Press the home button (iOS only)',
+            inputSchema: {
+                type: 'object',
+                properties: {},
+            },
+        });
+
+        this.addTool({
+            name: 'activate_app',
+            description: 'Activate/bring app to foreground by bundle ID (iOS) or package name (Android)',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    appId: {
+                        type: 'string',
+                        description: 'Bundle ID (iOS) or package name (Android) of the app to activate',
+                    },
+                },
+                required: ['appId'],
+            },
+        });
+
+        this.addTool({
+            name: 'check_connection',
+            description: 'Check if device connection is active and healthy (non-blocking)',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    includeDetails: {
+                        type: 'boolean',
+                        description: 'Include detailed connection information',
+                        default: false,
+                    },
+                },
+            },
+        });
+
+        // Advanced waiting and validation tools
+        this.addTool({
+            name: 'wait_for_element',
+            description: 'Wait for an element to appear or meet certain conditions',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    strategy: {
+                        type: 'string',
+                        enum: ['id', 'xpath', 'className', 'text', 'contentDescription', 'accessibilityId', 'iosClassChain', 'iosNsPredicate'],
+                        description: 'Element location strategy',
+                    },
+                    selector: {
+                        type: 'string',
+                        description: 'Element selector',
+                    },
+                    expectedCondition: {
+                        type: 'string',
+                        enum: ['visible', 'present', 'clickable'],
+                        description: 'Expected condition for the element',
+                        default: 'visible',
+                    },
+                    timeout: {
+                        type: 'number',
+                        description: 'Timeout in milliseconds',
+                        default: 10000,
+                    },
+                    pollInterval: {
+                        type: 'number',
+                        description: 'Polling interval in milliseconds',
+                        default: 500,
+                    },
+                },
+                required: ['strategy', 'selector'],
+            },
+        });
+
+        this.addTool({
+            name: 'wait_for_text',
+            description: 'Wait for specific text to appear or disappear on screen',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    text: {
+                        type: 'string',
+                        description: 'Text to wait for',
+                    },
+                    condition: {
+                        type: 'string',
+                        enum: ['appears', 'disappears'],
+                        description: 'Whether to wait for text to appear or disappear',
+                        default: 'appears',
+                    },
+                    timeout: {
+                        type: 'number',
+                        description: 'Timeout in milliseconds',
+                        default: 10000,
+                    },
+                    pollInterval: {
+                        type: 'number',
+                        description: 'Polling interval in milliseconds',
+                        default: 500,
+                    },
+                },
+                required: ['text'],
+            },
+        });
+
+        this.addTool({
+            name: 'scroll_to_element',
+            description: 'Scroll to find and display an element on screen',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    strategy: {
+                        type: 'string',
+                        enum: ['id', 'xpath', 'className', 'text', 'contentDescription', 'accessibilityId', 'iosClassChain', 'iosNsPredicate'],
+                        description: 'Element location strategy',
+                    },
+                    selector: {
+                        type: 'string',
+                        description: 'Element selector',
+                    },
+                    direction: {
+                        type: 'string',
+                        enum: ['up', 'down', 'left', 'right'],
+                        description: 'Scroll direction',
+                        default: 'down',
+                    },
+                    maxScrolls: {
+                        type: 'number',
+                        description: 'Maximum number of scroll attempts',
+                        default: 10,
+                    },
+                    scrollDistance: {
+                        type: 'number',
+                        description: 'Distance to scroll in pixels',
+                        default: 300,
+                    },
+                },
+                required: ['strategy', 'selector'],
+            },
+        });
+
+        this.addTool({
+            name: 'verify_action_result',
+            description: 'Verify the result of a previous action by checking element states or text changes',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    verification: {
+                        type: 'object',
+                        properties: {
+                            type: {
+                                type: 'string',
+                                enum: ['element_visible', 'element_hidden', 'text_present', 'text_absent', 'element_enabled', 'element_disabled'],
+                                description: 'Type of verification to perform',
+                        },
+                        strategy: {
+                            type: 'string',
+                            enum: ['id', 'xpath', 'className', 'text', 'contentDescription', 'accessibilityId', 'iosClassChain', 'iosNsPredicate'],
+                            description: 'Element location strategy (for element verifications)',
+                        },
+                        selector: {
+                            type: 'string',
+                            description: 'Element selector or text to verify',
+                        },
+                    },
+                    required: ['type', 'selector'],
+                },
+                timeout: {
+                    type: 'number',
+                    description: 'Timeout for verification in milliseconds',
+                    default: 5000,
+                },
+                waitAfterAction: {
+                    type: 'number',
+                    description: 'Time to wait before verification in milliseconds',
+                    default: 1000,
+                },
+            },
+            required: ['verification'],
+        },
+    });
+
+        this.addTool({
+            name: 'smart_wait',
+            description: 'Intelligent waiting based on loading states, network activity, or animations',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    waitType: {
+                        type: 'string',
+                        enum: ['loading_spinner', 'network_idle', 'animation_complete', 'custom_condition'],
+                        description: 'Type of smart wait to perform',
+                    },
+                    condition: {
+                        type: 'object',
+                        properties: {
+                            strategy: {
+                                type: 'string',
+                                enum: ['id', 'xpath', 'className', 'text', 'contentDescription', 'accessibilityId', 'iosClassChain', 'iosNsPredicate'],
+                                description: 'Element location strategy for custom condition',
+                            },
+                            selector: {
+                                type: 'string',
+                                description: 'Element selector for custom condition',
+                            },
+                            expectedState: {
+                                type: 'string',
+                                enum: ['visible', 'hidden', 'enabled', 'disabled'],
+                                description: 'Expected state for custom condition',
+                            },
+                        },
+                    },
+                    timeout: {
+                        type: 'number',
+                        description: 'Maximum wait time in milliseconds',
+                        default: 30000,
+                    },
+                    pollInterval: {
+                        type: 'number',
+                        description: 'Polling interval in milliseconds',
+                        default: 1000,
+                    },
+                },
+                required: ['waitType'],
+            },
+        });
+
+        this.addTool({
+            name: 'handle_popup',
+            description: 'Detect and handle popup dialogs',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    action: {
+                        type: 'string',
+                        enum: ['detect', 'dismiss', 'accept', 'wait_and_dismiss'],
+                        description: 'Action to take on popup',
+                        default: 'detect',
+                    },
+                    timeout: {
+                        type: 'number',
+                        description: 'Timeout in milliseconds',
+                        default: 5000,
+                    },
+                    actionButton: {
+                        type: 'string',
+                        description: 'Button text to click',
+                        default: 'OK',
+                    },
+                    popupSelector: {
+                        type: 'string',
+                        description: 'Popup element selector',
+                    },
+                },
+                required: [],
+            },
+        });
+
+        this.addTool({
+            name: 'capture_state',
+            description: 'Manually capture current device state (screenshot and page source) and get state capture context',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    actionName: {
+                        type: 'string',
+                        description: 'Name to identify this capture (default: manual_capture)',
+                        default: 'manual_capture',
+                    },
+                    getContext: {
+                        type: 'boolean',
+                        description: 'Whether to include state capture configuration and recent captures in response',
+                        default: true,
+                    },
+                },
+            },
+        });
+
         // Register tool handlers
         this.registerTool('appium_connect', this.handleConnect.bind(this));
         this.registerTool('appium_disconnect', this.handleDisconnect.bind(this));
@@ -311,11 +665,85 @@ class AppiumMCPServer extends BaseMCPServer {
         this.registerTool('swipe', this.handleSwipe.bind(this));
         this.registerTool('get_screenshot', this.handleGetScreenshot.bind(this));
         this.registerTool('get_page_source', this.handleGetPageSource.bind(this));
+        this.registerTool('handle_alert', this.handleAlert.bind(this));
+        this.registerTool('press_home', this.handlePressHome.bind(this));
+        this.registerTool('activate_app', this.handleActivateApp.bind(this));
+        this.registerTool('check_connection', this.handleCheckConnection.bind(this));
+        this.registerTool('wait_for_element', this.handleWaitForElement.bind(this));
+        this.registerTool('wait_for_text', this.handleWaitForText.bind(this));
+        this.registerTool('scroll_to_element', this.handleScrollToElement.bind(this));
+        this.registerTool('verify_action_result', this.handleVerifyActionResult.bind(this));
+        this.registerTool('smart_wait', this.handleSmartWait.bind(this));
+        this.registerTool('handle_popup', this.handlePopup.bind(this));
+        this.registerTool('capture_state', this.handleCaptureState.bind(this));
     }
 
     async ensureConnection() {
         if (!this.isConnected || !this.driver) {
             throw new Error('Not connected to device. Please run appium_connect first.');
+        }
+
+        // Check if session is still alive by sending a simple command
+        try {
+            await this.driver.getWindowSize();
+            this.lastActivity = Date.now();
+        } catch (error) {
+            console.warn('Session appears to be dead, attempting to reconnect...');
+            if (this.connectionConfig) {
+                try {
+                    await this.reconnect();
+                    console.log('Successfully reconnected to device');
+                } catch (reconnectError) {
+                    this.isConnected = false;
+                    this.driver = null;
+                    throw new Error(`Session lost and reconnection failed: ${reconnectError.message}. Please run appium_connect again.`);
+                }
+            } else {
+                this.isConnected = false;
+                this.driver = null;
+                throw new Error('Session lost and no connection config stored. Please run appium_connect again.');
+            }
+        }
+    }
+
+    async reconnect() {
+        if (!this.connectionConfig) {
+            throw new Error('No connection configuration stored for reconnection');
+        }
+
+        const { remote } = await import('webdriverio');
+        this.driver = await remote(this.connectionConfig);
+        this.isConnected = true;
+        this.lastActivity = Date.now();
+    }
+
+    // Add session keepalive functionality
+    startSessionKeepalive() {
+        if (this.keepaliveInterval) {
+            clearInterval(this.keepaliveInterval);
+        }
+
+        this.keepaliveInterval = setInterval(async () => {
+            if (this.isConnected && this.driver) {
+                const timeSinceLastActivity = Date.now() - this.lastActivity;
+                
+                // Send a keepalive ping if no activity for 2 minutes
+                if (timeSinceLastActivity > 120000) {
+                    try {
+                        await this.driver.getWindowSize();
+                        this.lastActivity = Date.now();
+                    } catch (error) {
+                        console.warn('Keepalive ping failed:', error.message);
+                    }
+                }
+            }
+        }, 60000); // Check every minute
+    }
+
+    stopSessionKeepalive() {
+        if (this.keepaliveInterval) {
+            clearInterval(this.keepaliveInterval);
+            this.keepaliveInterval = null;
         }
     }
 
@@ -323,11 +751,25 @@ class AppiumMCPServer extends BaseMCPServer {
         try {
             this.validateRequiredParams(args, []);
 
+            const platform = args.platform || 'Android';
             const hostname = args.hostname || 'localhost';
             const port = args.port || 4723;
-            const deviceName = args.deviceName || 'Android Device';
-            const platformVersion = args.platformVersion || '11';
-            const { appPackage, appActivity, udid } = args;
+            const deviceName = args.deviceName || `${platform} Device`;
+            const platformVersion = args.platformVersion || (platform === 'iOS' ? '15.0' : '11');
+            const { 
+                appPackage, 
+                appActivity, 
+                bundleId, 
+                udid,
+                usePrebuiltWDA,
+                derivedDataPath,
+                wdaLocalPort,
+                wdaConnectionTimeout,
+                wdaStartupRetries,
+                autoAcceptAlerts,
+                autoDismissAlerts,
+                shouldUseSingletonTestManager
+            } = args;
 
             const opts = {
                 hostname,
@@ -336,43 +778,110 @@ class AppiumMCPServer extends BaseMCPServer {
                 logLevel: 'info',
                 capabilities: {
                     alwaysMatch: {
-                        platformName: 'Android',
-                        'appium:automationName': 'UiAutomator2',
+                        platformName: platform,
                         'appium:deviceName': deviceName,
                         'appium:platformVersion': platformVersion,
                         'appium:noReset': true,
-                        'appium:autoGrantPermissions': true,
                     },
                 },
             };
+
+            // Platform-specific configurations
+            if (platform === 'iOS') {
+                opts.capabilities.alwaysMatch['appium:automationName'] = 'XCUITest';
+                
+                // Set default iOS alert handling if not specified
+                opts.capabilities.alwaysMatch['appium:autoAcceptAlerts'] = autoAcceptAlerts !== undefined ? autoAcceptAlerts : true;
+                opts.capabilities.alwaysMatch['appium:autoDismissAlerts'] = autoDismissAlerts !== undefined ? autoDismissAlerts : false;
+                
+                if (bundleId) {
+                    opts.capabilities.alwaysMatch['appium:bundleId'] = bundleId;
+                }
+
+                // iOS-specific WDA capabilities
+                if (usePrebuiltWDA !== undefined) {
+                    opts.capabilities.alwaysMatch['appium:usePrebuiltWDA'] = usePrebuiltWDA;
+                }
+
+                if (derivedDataPath) {
+                    opts.capabilities.alwaysMatch['appium:derivedDataPath'] = derivedDataPath;
+                }
+
+                if (wdaLocalPort) {
+                    opts.capabilities.alwaysMatch['appium:wdaLocalPort'] = wdaLocalPort;
+                }
+
+                if (wdaConnectionTimeout) {
+                    opts.capabilities.alwaysMatch['appium:wdaConnectionTimeout'] = wdaConnectionTimeout;
+                }
+
+                if (wdaStartupRetries) {
+                    opts.capabilities.alwaysMatch['appium:wdaStartupRetries'] = wdaStartupRetries;
+                }
+
+                if (shouldUseSingletonTestManager !== undefined) {
+                    opts.capabilities.alwaysMatch['appium:shouldUseSingletonTestManager'] = shouldUseSingletonTestManager;
+                }
+            } else {
+                opts.capabilities.alwaysMatch['appium:automationName'] = 'UiAutomator2';
+                opts.capabilities.alwaysMatch['appium:autoGrantPermissions'] = true;
+                
+                if (appPackage) {
+                    opts.capabilities.alwaysMatch['appium:appPackage'] = appPackage;
+                }
+
+                if (appActivity) {
+                    opts.capabilities.alwaysMatch['appium:appActivity'] = appActivity;
+                }
+            }
 
             if (udid) {
                 opts.capabilities.alwaysMatch['appium:udid'] = udid;
             }
 
-            if (appPackage) {
-                opts.capabilities.alwaysMatch['appium:appPackage'] = appPackage;
-            }
-
-            if (appActivity) {
-                opts.capabilities.alwaysMatch['appium:appActivity'] = appActivity;
-            }
-
             this.driver = await remote(opts);
             this.isConnected = true;
+            this.currentPlatform = platform;
+            
+            // Store connection config for auto-reconnect
+            this.connectionConfig = opts;
+            this.lastActivity = Date.now();
+            
+            // Start session keepalive
+            this.startSessionKeepalive();
 
-            const currentActivity = await this.driver.getCurrentActivity();
-            const currentPackage = await this.driver.getCurrentPackage();
+            let currentInfo = {};
+            try {
+                if (platform === 'Android') {
+                    currentInfo.currentActivity = await this.driver.getCurrentActivity();
+                    currentInfo.currentPackage = await this.driver.getCurrentPackage();
+                } else {
+                    // For iOS, get bundle ID if available
+                    try {
+                        const source = await this.driver.getPageSource();
+                        currentInfo.pageSourceLength = source.length;
+                    } catch (e) {
+                        // Ignore if page source is not available
+                    }
+                }
+            } catch (e) {
+                // Ignore errors when getting current info
+                console.warn('Could not get current app info:', e.message);
+            }
 
             return this.createSuccessResponse(
-                `Connected to Android device: ${deviceName}`,
+                `Connected to ${platform} device: ${deviceName}`,
                 {
+                    platform,
                     hostname,
                     port,
                     deviceName,
                     platformVersion,
-                    currentActivity,
-                    currentPackage,
+                    udid,
+                    bundleId: platform === 'iOS' ? bundleId : undefined,
+                    appPackage: platform === 'Android' ? appPackage : undefined,
+                    capabilities: opts.capabilities.alwaysMatch,
+                    ...currentInfo,
                 },
             );
         } catch (error) {
@@ -382,10 +891,15 @@ class AppiumMCPServer extends BaseMCPServer {
 
     async handleDisconnect(args) {
         try {
+            // Stop keepalive first
+            this.stopSessionKeepalive();
+            
             if (this.driver) {
                 await this.driver.deleteSession();
                 this.driver = null;
                 this.isConnected = false;
+                this.currentPlatform = null;
+                this.connectionConfig = null;
             }
 
             return this.createSuccessResponse('Disconnected from device');
@@ -399,17 +913,48 @@ class AppiumMCPServer extends BaseMCPServer {
             if (!this.isConnected || !this.driver) {
                 return this.createSuccessResponse('Not connected to any device', {
                     connected: false,
+                    platform: null,
+                    sessionActive: false,
                 });
             }
 
-            const currentActivity = await this.driver.getCurrentActivity();
-            const currentPackage = await this.driver.getCurrentPackage();
+            let currentInfo = { 
+                connected: true, 
+                platform: this.currentPlatform,
+                sessionActive: true,
+                lastActivity: new Date(this.lastActivity).toISOString(),
+                connectionConfig: this.connectionConfig ? {
+                    hostname: this.connectionConfig.hostname,
+                    port: this.connectionConfig.port,
+                    deviceName: this.connectionConfig.capabilities.alwaysMatch['appium:deviceName'],
+                    platformVersion: this.connectionConfig.capabilities.alwaysMatch['appium:platformVersion']
+                } : null
+            };
+            
+            try {
+                // Test if session is still alive
+                await this.driver.getWindowSize();
+                this.lastActivity = Date.now();
+                
+                if (this.currentPlatform === 'Android') {
+                    currentInfo.currentActivity = await this.driver.getCurrentActivity();
+                    currentInfo.currentPackage = await this.driver.getCurrentPackage();
+                } else if (this.currentPlatform === 'iOS') {
+                    // For iOS, we can get page source info or other available details
+                    try {
+                        const source = await this.driver.getPageSource();
+                        currentInfo.pageSourceLength = source.length;
+                    } catch (e) {
+                        // Ignore if not available
+                    }
+                }
+            } catch (e) {
+                console.warn('Could not get current app info:', e.message);
+                currentInfo.sessionActive = false;
+                currentInfo.error = e.message;
+            }
 
-            return this.createSuccessResponse('Device connection active', {
-                connected: true,
-                currentActivity,
-                currentPackage,
-            });
+            return this.createSuccessResponse('Device connection active', currentInfo);
         } catch (error) {
             return this.createErrorResponse('appium_status', error);
         }
@@ -550,10 +1095,37 @@ class AppiumMCPServer extends BaseMCPServer {
 
             const { strategy, selector, timeout = 10000 } = args;
 
-            const element = await this.findElementByStrategy(strategy, selector, timeout);
-            await element.click();
+            // Use state capture wrapper for this action
+            return await this.performActionWithStateCapture('click_element', async () => {
+                // Wait for element to be clickable
+                const element = await this.findElementByStrategy(strategy, selector, timeout);
+                
+                // Verify element is clickable
+                const isEnabled = await element.isEnabled();
+                const isDisplayed = await element.isDisplayed();
+                
+                if (!isEnabled) {
+                    throw new Error(`Element is not enabled: ${selector}`);
+                }
+                
+                if (!isDisplayed) {
+                    throw new Error(`Element is not visible: ${selector}`);
+                }
 
-            return this.createSuccessResponse(`Element clicked: ${selector}`);
+                // Perform click
+                await element.click();
+                
+                // Wait a moment for any immediate UI changes
+                await this.driver.pause(500);
+
+                return this.createSuccessResponse(`Element clicked: ${selector}`, {
+                    selector,
+                    strategy,
+                    wasEnabled: isEnabled,
+                    wasDisplayed: isDisplayed,
+                    clickPerformed: true
+                });
+            }, args);
         } catch (error) {
             return this.createErrorResponse('click_element', error);
         }
@@ -568,10 +1140,59 @@ class AppiumMCPServer extends BaseMCPServer {
                 strategy, selector, text, timeout = 10000,
             } = args;
 
-            const element = await this.findElementByStrategy(strategy, selector, timeout);
-            await element.setValue(text);
+            // Use state capture wrapper for this action
+            return await this.performActionWithStateCapture('type_text', async () => {
+                // Wait for element to be available for input
+                const element = await this.findElementByStrategy(strategy, selector, timeout);
+                
+                // Verify element is enabled and visible
+                const isEnabled = await element.isEnabled();
+                const isDisplayed = await element.isDisplayed();
+                
+                if (!isEnabled) {
+                    throw new Error(`Input element is not enabled: ${selector}`);
+                }
+                
+                if (!isDisplayed) {
+                    throw new Error(`Input element is not visible: ${selector}`);
+                }
 
-            return this.createSuccessResponse(`Text typed: ${text}`);
+                // Clear existing text first (if any)
+                try {
+                    await element.clearValue();
+                } catch (error) {
+                    // Some elements don't support clearValue, continue
+                }
+
+                // Type the text
+                await element.setValue(text);
+                
+                // Wait a moment for any immediate UI changes
+                await this.driver.pause(500);
+                
+                // Verify text was entered (best effort)
+                let verificationResult = null;
+                try {
+                    const currentValue = await element.getValue();
+                    verificationResult = {
+                        expectedText: text,
+                        actualText: currentValue,
+                        textMatches: currentValue === text
+                    };
+                } catch (error) {
+                    // Some elements don't support getValue
+                    verificationResult = { note: 'Text verification not supported for this element type' };
+                }
+
+                return this.createSuccessResponse(`Text typed: ${text}`, {
+                    selector,
+                    strategy,
+                    text,
+                    wasEnabled: isEnabled,
+                    wasDisplayed: isDisplayed,
+                    verification: verificationResult
+                });
+            }, args);
         } catch (error) {
             return this.createErrorResponse('type_text', error);
         }
@@ -586,16 +1207,31 @@ class AppiumMCPServer extends BaseMCPServer {
                 startX, startY, endX, endY, duration = 1000,
             } = args;
 
-            await this.driver.touchAction([
-                { action: 'press', x: startX, y: startY },
-                { action: 'wait', ms: duration },
-                { action: 'moveTo', x: endX, y: endY },
-                { action: 'release' },
-            ]);
+            // Use state capture wrapper for this action
+            return await this.performActionWithStateCapture('swipe', async () => {
+                if (this.currentPlatform === 'iOS') {
+                    // Use iOS-specific gesture for swiping
+                    await this.driver.execute('mobile: swipe', {
+                        startX,
+                        startY,
+                        endX,
+                        endY,
+                        duration: duration / 1000, // iOS expects duration in seconds
+                    });
+                } else {
+                    // Use Android touchAction
+                    await this.driver.touchAction([
+                        { action: 'press', x: startX, y: startY },
+                        { action: 'wait', ms: duration },
+                        { action: 'moveTo', x: endX, y: endY },
+                        { action: 'release' },
+                    ]);
+                }
 
-            return this.createSuccessResponse(
-                `Swipe performed from (${startX},${startY}) to (${endX},${endY})`,
-            );
+                return this.createSuccessResponse(
+                    `Swipe performed from (${startX},${startY}) to (${endX},${endY})`,
+                );
+            }, args);
         } catch (error) {
             return this.createErrorResponse('swipe', error);
         }
@@ -645,14 +1281,150 @@ class AppiumMCPServer extends BaseMCPServer {
         }
     }
 
+    async handleAlert(args) {
+        try {
+            await this.ensureConnection();
+            
+            if (this.currentPlatform !== 'iOS') {
+                throw new Error('Alert handling is only supported on iOS');
+            }
+
+            const action = args.action || 'accept';
+            
+            try {
+                if (action === 'accept') {
+                    await this.driver.acceptAlert();
+                } else {
+                    await this.driver.dismissAlert();
+                }
+                
+                return this.createSuccessResponse(`Alert ${action}ed successfully`);
+            } catch (error) {
+                // No alert present
+                return this.createSuccessResponse('No alert found to handle');
+            }
+        } catch (error) {
+            return this.createErrorResponse('handle_alert', error);
+        }
+    }
+
+    async handlePressHome(args) {
+        try {
+            await this.ensureConnection();
+            
+            if (this.currentPlatform !== 'iOS') {
+                throw new Error('Home button press is only supported on iOS');
+            }
+
+            await this.driver.execute('mobile: pressButton', { name: 'home' });
+            
+            return this.createSuccessResponse('Home button pressed');
+        } catch (error) {
+            return this.createErrorResponse('press_home', error);
+        }
+    }
+
+    async handleActivateApp(args) {
+        try {
+            this.validateRequiredParams(args, ['appId']);
+            await this.ensureConnection();
+
+            const { appId } = args;
+
+            await this.driver.activateApp(appId);
+            await this.driver.pause(2000);
+
+            let currentInfo = {};
+            try {
+                if (this.currentPlatform === 'Android') {
+                    currentInfo.currentActivity = await this.driver.getCurrentActivity();
+                    currentInfo.currentPackage = await this.driver.getCurrentPackage();
+                } else {
+                    currentInfo.bundleId = appId;
+                }
+            } catch (e) {
+                // Ignore errors getting current info
+            }
+
+            return this.createSuccessResponse(`App activated: ${appId}`, {
+                appId,
+                platform: this.currentPlatform,
+                ...currentInfo,
+            });
+        } catch (error) {
+            return this.createErrorResponse('activate_app', error);
+        }
+    }
+
+    async handleCheckConnection(args) {
+        try {
+            const includeDetails = args.includeDetails || false;
+            
+            const result = {
+                connected: this.isConnected,
+                platform: this.currentPlatform,
+                sessionActive: false,
+                connectionHealthy: false,
+            };
+
+            if (!this.isConnected || !this.driver) {
+                return this.createSuccessResponse('No active connection', result);
+            }
+
+            // Test if session is still alive with a lightweight operation
+            try {
+                await this.driver.getWindowSize();
+                result.sessionActive = true;
+                result.connectionHealthy = true;
+                this.lastActivity = Date.now();
+                
+                if (includeDetails) {
+                    result.lastActivity = new Date(this.lastActivity).toISOString();
+                    result.connectionConfig = this.connectionConfig ? {
+                        hostname: this.connectionConfig.hostname,
+                        port: this.connectionConfig.port,
+                        deviceName: this.connectionConfig.capabilities.alwaysMatch['appium:deviceName'],
+                        platformVersion: this.connectionConfig.capabilities.alwaysMatch['appium:platformVersion'],
+                        udid: this.connectionConfig.capabilities.alwaysMatch['appium:udid']
+                    } : null;
+                    
+                    // Try to get current app info
+                    try {
+                        if (this.currentPlatform === 'Android') {
+                            result.currentActivity = await this.driver.getCurrentActivity();
+                            result.currentPackage = await this.driver.getCurrentPackage();
+                        } else if (this.currentPlatform === 'iOS') {
+                            const source = await this.driver.getPageSource();
+                            result.pageSourceLength = source.length;
+                        }
+                    } catch (e) {
+                        // Ignore if app info is not available
+                    }
+                }
+                
+                return this.createSuccessResponse('Connection is healthy and active', result);
+            } catch (error) {
+                result.sessionActive = false;
+                result.connectionHealthy = false;
+                result.error = error.message;
+                
+                return this.createSuccessResponse('Connection exists but session is not healthy', result);
+            }
+        } catch (error) {
+            return this.createErrorResponse('check_connection', error);
+        }
+    }
+
     async findElementByStrategy(strategy, selector, timeout) {
         const selectorMap = {
             id: `#${selector}`,
             xpath: selector,
             className: `.${selector}`,
-            text: `//*[@text="${selector}"]`,
-            contentDescription: `//*[@content-desc="${selector}"]`,
+            text: this.currentPlatform === 'iOS' ? `//*[@label="${selector}" or @name="${selector}" or @value="${selector}"]` : `//*[@text="${selector}"]`,
+            contentDescription: this.currentPlatform === 'iOS' ? `//*[@label="${selector}" or @name="${selector}"]` : `//*[@content-desc="${selector}"]`,
             accessibilityId: `~${selector}`,
+            iosClassChain: selector, // iOS-specific class chain selector
+            iosNsPredicate: selector, // iOS-specific NSPredicate selector
         };
 
         const actualSelector = selectorMap[strategy];
@@ -660,7 +1432,15 @@ class AppiumMCPServer extends BaseMCPServer {
             throw new Error(`Unsupported strategy: ${strategy}`);
         }
 
-        const element = await this.driver.$(actualSelector);
+        let element;
+        if (strategy === 'iosClassChain') {
+            element = await this.driver.$(`-ios class chain:${selector}`);
+        } else if (strategy === 'iosNsPredicate') {
+            element = await this.driver.$(`-ios predicate string:${selector}`);
+        } else {
+            element = await this.driver.$(actualSelector);
+        }
+        
         await element.waitForExist({ timeout });
         return element;
     }
@@ -670,9 +1450,11 @@ class AppiumMCPServer extends BaseMCPServer {
             id: `#${selector}`,
             xpath: selector,
             className: `.${selector}`,
-            text: `//*[@text="${selector}"]`,
-            contentDescription: `//*[@content-desc="${selector}"]`,
+            text: this.currentPlatform === 'iOS' ? `//*[@label="${selector}" or @name="${selector}" or @value="${selector}"]` : `//*[@text="${selector}"]`,
+            contentDescription: this.currentPlatform === 'iOS' ? `//*[@label="${selector}" or @name="${selector}"]` : `//*[@content-desc="${selector}"]`,
             accessibilityId: `~${selector}`,
+            iosClassChain: selector, // iOS-specific class chain selector
+            iosNsPredicate: selector, // iOS-specific NSPredicate selector
         };
 
         const actualSelector = selectorMap[strategy];
@@ -680,20 +1462,784 @@ class AppiumMCPServer extends BaseMCPServer {
             throw new Error(`Unsupported strategy: ${strategy}`);
         }
 
-        const elements = await this.driver.$$(actualSelector);
+        let elements;
+        if (strategy === 'iosClassChain') {
+            elements = await this.driver.$$(`-ios class chain:${selector}`);
+        } else if (strategy === 'iosNsPredicate') {
+            elements = await this.driver.$$(`-ios predicate string:${selector}`);
+        } else {
+            elements = await this.driver.$$(actualSelector);
+        }
+
         if (elements.length === 0) {
             await this.driver.waitUntil(
                 async () => {
-                    const newElements = await this.driver.$$(actualSelector);
+                    let newElements;
+                    if (strategy === 'iosClassChain') {
+                        newElements = await this.driver.$$(`-ios class chain:${selector}`);
+                    } else if (strategy === 'iosNsPredicate') {
+                        newElements = await this.driver.$$(`-ios predicate string:${selector}`);
+                    } else {
+                        newElements = await this.driver.$$(actualSelector);
+                    }
                     return newElements.length > 0;
                 },
                 { timeout },
             );
-            return await this.driver.$$(actualSelector);
+            
+            if (strategy === 'iosClassChain') {
+                return await this.driver.$$(`-ios class chain:${selector}`);
+            } else if (strategy === 'iosNsPredicate') {
+                return await this.driver.$$(`-ios predicate string:${selector}`);
+            } else {
+                return await this.driver.$$(actualSelector);
+            }
         }
         return elements;
     }
+
+    // Automatic state capture functionality
+    async captureCurrentState(actionName, actionParams = {}) {
+        if (!this.autoStateCapture.enabled || !this.isConnected) {
+            return null;
+        }
+
+        try {
+            const timestamp = Date.now();
+            const captureId = `${actionName}_${timestamp}`;
+            
+            // Ensure capture directory exists
+            await fs.mkdir(this.autoStateCapture.outputDir, { recursive: true });
+
+            // Capture screenshot
+            let screenshotPath = null;
+            try {
+                const screenshot = await this.driver.takeScreenshot();
+                screenshotPath = path.join(this.autoStateCapture.outputDir, `${captureId}_screenshot.png`);
+                await fs.writeFile(screenshotPath, screenshot, 'base64');
+            } catch (error) {
+                console.warn('Failed to capture screenshot:', error.message);
+            }
+
+            // Capture page source
+            let pageSourcePath = null;
+            try {
+                const pageSource = await this.driver.getPageSource();
+                pageSourcePath = path.join(this.autoStateCapture.outputDir, `${captureId}_page_source.xml`);
+                await fs.writeFile(pageSourcePath, pageSource, 'utf8');
+            } catch (error) {
+                console.warn('Failed to capture page source:', error.message);
+            }
+
+            // Get current window info
+            let windowInfo = {};
+            try {
+                windowInfo = await this.driver.getWindowSize();
+            } catch (error) {
+                console.warn('Failed to get window info:', error.message);
+            }
+
+            // Get current app context (platform-specific)
+            let appContext = {};
+            try {
+                if (this.currentPlatform === 'Android') {
+                    appContext.currentActivity = await this.driver.getCurrentActivity();
+                    appContext.currentPackage = await this.driver.getCurrentPackage();
+                } else if (this.currentPlatform === 'iOS') {
+                    // For iOS, we can capture orientation and other available info
+                    appContext.orientation = await this.driver.getOrientation();
+                }
+            } catch (error) {
+                console.warn('Failed to get app context:', error.message);
+            }
+
+            const capture = {
+                id: captureId,
+                timestamp,
+                actionName,
+                actionParams,
+                platform: this.currentPlatform,
+                screenshotPath,
+                pageSourcePath,
+                windowInfo,
+                appContext,
+                captureTime: new Date(timestamp).toISOString()
+            };
+
+            // Add to recent captures and maintain retention limit
+            this.autoStateCapture.lastCaptures.push(capture);
+            if (this.autoStateCapture.lastCaptures.length > this.autoStateCapture.retainCount) {
+                // Remove oldest captures (but keep files for debugging)
+                this.autoStateCapture.lastCaptures.shift();
+            }
+
+            return capture;
+        } catch (error) {
+            console.warn('State capture failed:', error.message);
+            return null;
+        }
+    }
+
+    async getStateCaptureContext() {
+        if (!this.autoStateCapture.enabled) {
+            return { enabled: false };
+        }
+
+        return {
+            enabled: true,
+            retainCount: this.autoStateCapture.retainCount,
+            outputDir: this.autoStateCapture.outputDir,
+            captureBeforeActions: this.autoStateCapture.captureBeforeActions,
+            recentCapturesCount: this.autoStateCapture.lastCaptures.length,
+            lastCaptures: this.autoStateCapture.lastCaptures.map(capture => ({
+                id: capture.id,
+                timestamp: capture.timestamp,
+                actionName: capture.actionName,
+                platform: capture.platform,
+                hasScreenshot: !!capture.screenshotPath,
+                hasPageSource: !!capture.pageSourcePath,
+                captureTime: capture.captureTime
+            }))
+        };
+    }
+
+    // Enhanced action methods with automatic state capture
+    async performActionWithStateCapture(actionName, actionFunction, args) {
+        let preActionCapture = null;
+        
+        // Capture state before action if configured
+        if (this.autoStateCapture.captureBeforeActions.includes(actionName)) {
+            console.log(`📸 Capturing state before ${actionName}...`);
+            preActionCapture = await this.captureCurrentState(`pre_${actionName}`, args);
+        }
+
+        // Perform the actual action
+        const result = await actionFunction();
+
+        // Add capture information to result if captured
+        if (preActionCapture) {
+            result.stateCapture = {
+                preActionCapture: {
+                    id: preActionCapture.id,
+                    timestamp: preActionCapture.timestamp,
+                    screenshotPath: preActionCapture.screenshotPath,
+                    pageSourcePath: preActionCapture.pageSourcePath,
+                    captureTime: preActionCapture.captureTime
+                },
+                message: `State captured before ${actionName}. Screenshot: ${preActionCapture.screenshotPath ? 'available' : 'failed'}, Page source: ${preActionCapture.pageSourcePath ? 'available' : 'failed'}`
+            };
+        }
+
+        return result;
+    }
+
+    async handleWaitForElement(args) {
+        try {
+            await this.ensureConnection();
+
+            const { selector, selectorType = 'xpath', timeout = 10000, expectedCondition = 'visible', pollInterval = 500 } = args;
+
+            console.log(`Waiting for element: ${selector} (${selectorType}) with condition: ${expectedCondition}`);
+
+            const startTime = Date.now();
+            let element = null;
+            let lastError = null;
+
+            while (Date.now() - startTime < timeout) {
+                try {
+                    // Find the element
+                    element = await this.driver.$(selector);
+                    
+                    // Check if element exists
+                    const exists = await element.isExisting();
+                    if (!exists) {
+                        throw new Error('Element does not exist');
+                    }
+
+                    // Check condition
+                    let conditionMet = false;
+                    switch (expectedCondition) {
+                        case 'visible':
+                            conditionMet = await element.isDisplayed();
+                            break;
+                        case 'present':
+                            conditionMet = exists;
+                            break;
+                        case 'clickable':
+                            conditionMet = await element.isClickable();
+                            break;
+                        default:
+                            conditionMet = exists;
+                    }
+
+                    if (conditionMet) {
+                        return this.createSuccessResponse(
+                            `Element found and ${expectedCondition}`,
+                            {
+                                found: true,
+                                condition: expectedCondition,
+                                selector,
+                                selectorType,
+                                waitTime: Date.now() - startTime
+                            }
+                        );
+                    }
+                } catch (error) {
+                    lastError = error;
+                }
+
+                await new Promise(resolve => setTimeout(resolve, pollInterval));
+            }
+
+            return this.createErrorResponse('wait_for_element', 
+                new Error(`Element not found or condition not met after ${timeout}ms. Last error: ${lastError?.message || 'Unknown'}`));
+        } catch (error) {
+            return this.createErrorResponse('wait_for_element', error);
+        }
+    }
+
+    async handleWaitForText(args) {
+        try {
+            await this.ensureConnection();
+
+            const { text, timeout = 10000, exact = false, pollInterval = 500 } = args;
+
+            console.log(`Waiting for text: "${text}" (exact: ${exact})`);
+
+            const startTime = Date.now();
+            let lastError = null;
+
+            while (Date.now() - startTime < timeout) {
+                try {
+                    const pageSource = await this.driver.getPageSource();
+                    
+                    const found = exact ? 
+                        pageSource.includes(text) : 
+                        pageSource.toLowerCase().includes(text.toLowerCase());
+
+                    if (found) {
+                        return this.createSuccessResponse(
+                            `Text found: "${text}"`,
+                            {
+                                found: true,
+                                text,
+                                exact,
+                                waitTime: Date.now() - startTime
+                            }
+                        );
+                    }
+                } catch (error) {
+                    lastError = error;
+                }
+
+                await new Promise(resolve => setTimeout(resolve, pollInterval));
+            }
+
+            return this.createErrorResponse('wait_for_text', 
+                new Error(`Text "${text}" not found after ${timeout}ms. Last error: ${lastError?.message || 'Unknown'}`));
+        } catch (error) {
+            return this.createErrorResponse('wait_for_text', error);
+        }
+    }
+
+    async handleScrollToElement(args) {
+        try {
+            await this.ensureConnection();
+
+            const { selector, selectorType = 'xpath', direction = 'down', maxScrolls = 10, scrollDistance = 300 } = args;
+
+            console.log(`Scrolling to find element: ${selector} (${selectorType})`);
+
+            let scrollCount = 0;
+            let element = null;
+
+            while (scrollCount < maxScrolls) {
+                try {
+                    // Try to find the element
+                    element = await this.driver.$(selector);
+                    const exists = await element.isExisting();
+                    const displayed = exists ? await element.isDisplayed() : false;
+
+                    if (exists && displayed) {
+                        // Element found and visible, scroll it into view if needed
+                        await element.scrollIntoView();
+                        
+                        return this.createSuccessResponse(
+                            `Element found and scrolled into view`,
+                            {
+                                found: true,
+                                selector,
+                                selectorType,
+                                scrollsPerformed: scrollCount,
+                                direction
+                            }
+                        );
+                    }
+                } catch (error) {
+                    // Element not found yet, continue scrolling
+                }
+
+                // Perform scroll gesture
+                const windowSize = await this.driver.getWindowSize();
+                const centerX = Math.floor(windowSize.width / 2);
+                const centerY = Math.floor(windowSize.height / 2);
+
+                let startX = centerX, startY = centerY, endX = centerX, endY = centerY;
+
+                switch (direction.toLowerCase()) {
+                    case 'down':
+                        startY = centerY + Math.floor(scrollDistance / 2);
+                        endY = centerY - Math.floor(scrollDistance / 2);
+                        break;
+                    case 'up':
+                        startY = centerY - Math.floor(scrollDistance / 2);
+                        endY = centerY + Math.floor(scrollDistance / 2);
+                        break;
+                    case 'left':
+                        startX = centerX + Math.floor(scrollDistance / 2);
+                        endX = centerX - Math.floor(scrollDistance / 2);
+                        break;
+                    case 'right':
+                        startX = centerX - Math.floor(scrollDistance / 2);
+                        endX = centerX + Math.floor(scrollDistance / 2);
+                        break;
+                }
+
+                await this.driver.performActions([{
+                    type: 'pointer',
+                    id: 'finger1',
+                    parameters: { pointerType: 'touch' },
+                    actions: [
+                        { type: 'pointerMove', duration: 0, x: startX, y: startY },
+                        { type: 'pointerDown', button: 0 },
+                        { type: 'pointerMove', duration: 1000, x: endX, y: endY },
+                        { type: 'pointerUp', button: 0 }
+                    ]
+                }]);
+
+                await this.driver.releaseActions();
+                scrollCount++;
+
+                // Wait briefly between scrolls
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+
+            return this.createErrorResponse('scroll_to_element', 
+                new Error(`Element not found after ${maxScrolls} scroll attempts`));
+        } catch (error) {
+            return this.createErrorResponse('scroll_to_element', error);
+        }
+    }
+
+    async handleVerifyActionResult(args) {
+        try {
+            await this.ensureConnection();
+
+            const { expectedText, expectedElement, timeout = 5000 } = args;
+
+            console.log(`Verifying action result...`);
+
+            const startTime = Date.now();
+
+            // Wait a moment for UI to update
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            const results = {
+                verified: false,
+                checks: []
+            };
+
+            // Check for expected text if provided
+            if (expectedText) {
+                try {
+                    const pageSource = await this.driver.getPageSource();
+                    const textFound = pageSource.toLowerCase().includes(expectedText.toLowerCase());
+                    
+                    results.checks.push({
+                        type: 'text',
+                        expected: expectedText,
+                        found: textFound
+                    });
+
+                    if (textFound) {
+                        results.verified = true;
+                    }
+                } catch (error) {
+                    results.checks.push({
+                        type: 'text',
+                        expected: expectedText,
+                        error: error.message
+                    });
+                }
+            }
+
+            // Check for expected element if provided
+            if (expectedElement) {
+                try {
+                    const element = await this.driver.$(expectedElement);
+                    const elementExists = await element.isExisting();
+                    const elementDisplayed = elementExists ? await element.isDisplayed() : false;
+                    
+                    results.checks.push({
+                        type: 'element',
+                        selector: expectedElement,
+                        exists: elementExists,
+                        displayed: elementDisplayed
+                    });
+
+                    if (elementExists && elementDisplayed) {
+                        results.verified = true;
+                    }
+                } catch (error) {
+                    results.checks.push({
+                        type: 'element',
+                        selector: expectedElement,
+                        error: error.message
+                    });
+                }
+            }
+
+            results.verificationTime = Date.now() - startTime;
+
+            return this.createSuccessResponse(
+                results.verified ? 'Action result verified successfully' : 'Action result verification failed',
+                results
+            );
+        } catch (error) {
+            return this.createErrorResponse('verify_action_result', error);
+        }
+    }
+
+    async handleSmartWait(args) {
+        try {
+            await this.ensureConnection();
+
+            const { 
+                conditions = [], 
+                timeout = 10000, 
+                pollInterval = 500,
+                waitForStability = true,
+                stabilityDuration = 1000
+            } = args;
+
+            console.log(`Smart wait with ${conditions.length} conditions...`);
+
+            const startTime = Date.now();
+            let lastStableTime = null;
+
+            while (Date.now() - startTime < timeout) {
+                let allConditionsMet = true;
+                const results = [];
+
+                for (const condition of conditions) {
+                    const result = { condition, met: false };
+
+                    try {
+                        switch (condition.type) {
+                            case 'element_visible':
+                                const element = await this.driver.$(condition.selector);
+                                const exists = await element.isExisting();
+                                const visible = exists ? await element.isDisplayed() : false;
+                                result.met = visible;
+                                result.details = { exists, visible };
+                                break;
+
+                            case 'text_present':
+                                const pageSource = await this.driver.getPageSource();
+                                const textFound = condition.exact ? 
+                                    pageSource.includes(condition.text) : 
+                                    pageSource.toLowerCase().includes(condition.text.toLowerCase());
+                                result.met = textFound;
+                                result.details = { textFound };
+                                break;
+
+                            case 'element_clickable':
+                                const clickableElement = await this.driver.$(condition.selector);
+                                const clickable = await clickableElement.isClickable();
+                                result.met = clickable;
+                                result.details = { clickable };
+                                break;
+
+                            case 'loading_complete':
+                                // Check for common loading indicators
+                                const loadingSelectors = condition.loadingSelectors || [
+                                    '//*[contains(@class, "loading")]',
+                                    '//*[contains(@class, "spinner")]',
+                                    '//*[contains(@text, "Loading")]'
+                                ];
+                                
+                                let loadingFound = false;
+                                for (const selector of loadingSelectors) {
+                                    try {
+                                        const loadingElement = await this.driver.$(selector);
+                                        const loadingExists = await loadingElement.isExisting();
+                                        const loadingVisible = loadingExists ? await loadingElement.isDisplayed() : false;
+                                        if (loadingVisible) {
+                                            loadingFound = true;
+                                            break;
+                                        }
+                                    } catch (e) {
+                                        // Continue checking other selectors
+                                    }
+                                }
+                                result.met = !loadingFound;
+                                result.details = { loadingFound };
+                                break;
+
+                            default:
+                                result.met = false;
+                                result.error = `Unknown condition type: ${condition.type}`;
+                        }
+                    } catch (error) {
+                        result.met = false;
+                        result.error = error.message;
+                    }
+
+                    results.push(result);
+                    
+                    if (!result.met) {
+                        allConditionsMet = false;
+                    }
+                }
+
+                if (allConditionsMet) {
+                    if (waitForStability) {
+                        if (!lastStableTime) {
+                            lastStableTime = Date.now();
+                        } else if (Date.now() - lastStableTime >= stabilityDuration) {
+                            return this.createSuccessResponse(
+                                'All conditions met and stable',
+                                {
+                                    conditionsMet: true,
+                                    stable: true,
+                                    waitTime: Date.now() - startTime,
+                                    stabilityTime: stabilityDuration,
+                                    results
+                                }
+                            );
+                        }
+                    } else {
+                        return this.createSuccessResponse(
+                            'All conditions met',
+                            {
+                                conditionsMet: true,
+                                waitTime: Date.now() - startTime,
+                                results
+                            }
+                        );
+                    }
+                } else {
+                    lastStableTime = null;
+                }
+
+                await new Promise(resolve => setTimeout(resolve, pollInterval));
+            }
+
+            return this.createErrorResponse('smart_wait', 
+                new Error(`Smart wait timeout after ${timeout}ms. Not all conditions were met.`));
+        } catch (error) {
+            return this.createErrorResponse('smart_wait', error);
+        }
+    }
+
+    async handlePopup(args) {
+        try {
+            await this.ensureConnection();
+
+            const { 
+                action = 'detect', 
+                timeout = 5000, 
+                actionButton = 'OK',
+                popupSelector
+            } = args;
+
+            console.log(`Handling popup with action: ${action}`);
+
+            switch (action) {
+                case 'detect':
+                    // Look for common popup indicators
+                    const popupSelectors = popupSelector ? [popupSelector] : [
+                        '//*[contains(@class, "alert")]',
+                        '//*[contains(@class, "dialog")]',
+                        '//*[contains(@class, "popup")]',
+                        '//*[contains(@class, "modal")]',
+                        '//android.widget.Button',
+                        '//XCUIElementTypeAlert',
+                        '//XCUIElementTypeButton'
+                    ];
+
+                    for (const selector of popupSelectors) {
+                        try {
+                            const element = await this.driver.$(selector);
+                            const exists = await element.isExisting();
+                            const displayed = exists ? await element.isDisplayed() : false;
+
+                            if (exists && displayed) {
+                                const text = await element.getText().catch(() => '');
+                                return this.createSuccessResponse(
+                                    'Popup detected',
+                                    {
+                                        detected: true,
+                                        selector,
+                                        text,
+                                        element: {
+                                            exists,
+                                            displayed
+                                        }
+                                    }
+                                );
+                            }
+                        } catch (error) {
+                            // Continue checking other selectors
+                        }
+                    }
+
+                    return this.createSuccessResponse(
+                        'No popup detected',
+                        { detected: false }
+                    );
+
+                case 'dismiss':
+                case 'accept':
+                    // Try to find and click the appropriate button
+                    const buttonSelectors = [
+                        `//*[contains(@text, "${actionButton}")]`,
+                        `//*[@text="${actionButton}"]`,
+                        `//android.widget.Button[contains(@text, "${actionButton}")]`,
+                        `//XCUIElementTypeButton[@name="${actionButton}"]`,
+                        `//XCUIElementTypeButton[contains(@name, "${actionButton}")]`
+                    ];
+
+                    for (const selector of buttonSelectors) {
+                        try {
+                            const button = await this.driver.$(selector);
+                            const exists = await button.isExisting();
+                            const clickable = exists ? await button.isClickable() : false;
+
+                            if (exists && clickable) {
+                                await button.click();
+                                
+                                // Wait briefly and verify popup is gone
+                                await new Promise(resolve => setTimeout(resolve, 1000));
+                                
+                                const stillExists = await button.isExisting();
+                                const stillDisplayed = stillExists ? await button.isDisplayed() : false;
+
+                                return this.createSuccessResponse(
+                                    `Popup ${action}ed successfully`,
+                                    {
+                                        action,
+                                        actionButton,
+                                        clicked: true,
+                                        popupGone: !stillDisplayed,
+                                        selector
+                                    }
+                                );
+                            }
+                        } catch (error) {
+                            // Continue trying other selectors
+                        }
+                    }
+
+                    return this.createErrorResponse('handle_popup', 
+                        new Error(`Could not find or click ${actionButton} button`));
+
+                case 'wait_and_dismiss':
+                    // Wait for popup to appear, then dismiss it
+                    const startTime = Date.now();
+                    let popupFound = false;
+
+                    while (Date.now() - startTime < timeout && !popupFound) {
+                        const detectResult = await this.handlePopup({ action: 'detect', popupSelector });
+                        
+                        if (detectResult.content && detectResult.content.detected) {
+                            popupFound = true;
+                            
+                            // Now dismiss it
+                            const dismissResult = await this.handlePopup({ 
+                                action: 'dismiss', 
+                                actionButton,
+                                popupSelector 
+                            });
+                            
+                            return this.createSuccessResponse(
+                                'Popup detected and dismissed',
+                                {
+                                    waitTime: Date.now() - startTime,
+                                    detected: true,
+                                    dismissed: dismissResult.isError ? false : true,
+                                    dismissResult
+                                }
+                            );
+                        }
+
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                    }
+
+                    return this.createSuccessResponse(
+                        'No popup appeared within timeout',
+                        {
+                            waitTime: Date.now() - startTime,
+                            detected: false,
+                            timeout
+                        }
+                    );
+
+                default:
+                    return this.createErrorResponse('handle_popup', 
+                        new Error(`Unknown popup action: ${action}`));
+            }
+        } catch (error) {
+            return this.createErrorResponse('handle_popup', error);
+        }
+    }
+
+    async handleCaptureState(args) {
+        try {
+            await this.ensureConnection();
+
+            const { actionName = 'manual_capture', getContext = true } = args;
+
+            // Capture current state
+            const capture = await this.captureCurrentState(actionName, args);
+            
+            const result = {
+                capturePerformed: !!capture,
+                actionName,
+            };
+
+            if (capture) {
+                result.capture = {
+                    id: capture.id,
+                    timestamp: capture.timestamp,
+                    screenshotPath: capture.screenshotPath,
+                    pageSourcePath: capture.pageSourcePath,
+                    platform: capture.platform,
+                    windowInfo: capture.windowInfo,
+                    appContext: capture.appContext,
+                    captureTime: capture.captureTime,
+                };
+            }
+
+            // Include context if requested
+            if (getContext) {
+                result.stateConfiguration = await this.getStateCaptureContext();
+            }
+
+            return this.createSuccessResponse(
+                capture ? 
+                    `State captured successfully: ${capture.id}` : 
+                    'State capture is disabled or failed',
+                result
+            );
+        } catch (error) {
+            return this.createErrorResponse('capture_state', error);
+        }
+    }
 }
+
+// Export the class for testing
+export { AppiumMCPServer };
 
 // Start the server
 const server = new AppiumMCPServer();
