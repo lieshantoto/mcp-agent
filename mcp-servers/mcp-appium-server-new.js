@@ -29,7 +29,7 @@ class AppiumMCPServer extends BaseMCPServer {
         this.driver = null;
         this.isConnected = false;
         this.currentPlatform = null;
-        this.connectionConfig = null; // Store connection config for auto-reconnect
+        this.connectionConfig = null;
         this.sessionTimeout = 300000; // 5 minutes default session timeout
         this.lastActivity = Date.now();
         
@@ -40,6 +40,15 @@ class AppiumMCPServer extends BaseMCPServer {
             retainCount: 5, // Keep last 5 captures
             outputDir: './automation-state-captures',
             lastCaptures: [] // Store recent captures for context
+        };
+        
+        // Screenshot analysis and coordinate-based fallback configuration
+        this.coordinateFallback = {
+            enabled: true,
+            confidenceThreshold: 0.7,
+            textSimilarityThreshold: 0.8,
+            relativePositionTolerance: 0.1,
+            maxFallbackAttempts: 3
         };
         
         this.registerTools();
@@ -651,6 +660,140 @@ class AppiumMCPServer extends BaseMCPServer {
             },
         });
 
+        this.addTool({
+            name: 'smart_find_and_click',
+            description: 'Intelligently find and click elements using multiple strategies including AI-powered screenshot analysis',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    strategy: {
+                        type: 'string',
+                        enum: ['id', 'xpath', 'className', 'text', 'contentDescription', 'accessibilityId', 'iosClassChain', 'iosNsPredicate'],
+                        description: 'Primary element location strategy',
+                    },
+                    selector: {
+                        type: 'string',
+                        description: 'Primary element selector value',
+                    },
+                    fallbackOptions: {
+                        type: 'object',
+                        properties: {
+                            enableScreenshotAnalysis: {
+                                type: 'boolean',
+                                description: 'Enable AI-powered screenshot analysis for coordinate-based clicking',
+                                default: true
+                            },
+                            textToFind: {
+                                type: 'string',
+                                description: 'Text content to look for in screenshot analysis'
+                            },
+                            relativeToElement: {
+                                type: 'object',
+                                properties: {
+                                    strategy: { type: 'string' },
+                                    selector: { type: 'string' },
+                                    position: {
+                                        type: 'string',
+                                        enum: ['above', 'below', 'left', 'right', 'inside'],
+                                        description: 'Position relative to reference element'
+                                    },
+                                    offsetX: { type: 'number', description: 'X offset from reference position' },
+                                    offsetY: { type: 'number', description: 'Y offset from reference position' }
+                                }
+                            },
+                            coordinateHints: {
+                                type: 'object',
+                                properties: {
+                                    x: { type: 'number', description: 'Relative X position (0.0-1.0)' },
+                                    y: { type: 'number', description: 'Relative Y position (0.0-1.0)' },
+                                    width: { type: 'number', description: 'Expected element width ratio' },
+                                    height: { type: 'number', description: 'Expected element height ratio' }
+                                }
+                            }
+                        }
+                    },
+                    timeout: {
+                        type: 'number',
+                        description: 'Wait timeout in milliseconds (default: 10000)',
+                        default: 10000,
+                    },
+                },
+                required: ['strategy', 'selector'],
+            },
+        });
+
+        this.addTool({
+            name: 'analyze_screenshot',
+            description: 'Analyze screenshot to find elements and suggest coordinates',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    targetDescription: {
+                        type: 'string',
+                        description: 'Description of what to find (e.g., "login button", "username field")'
+                    },
+                    textToFind: {
+                        type: 'string',
+                        description: 'Specific text to locate in the screenshot'
+                    },
+                    elementType: {
+                        type: 'string',
+                        enum: ['button', 'input', 'text', 'image', 'any'],
+                        description: 'Type of element to find',
+                        default: 'any'
+                    },
+                    region: {
+                        type: 'object',
+                        properties: {
+                            x: { type: 'number', description: 'Search region X (0.0-1.0)' },
+                            y: { type: 'number', description: 'Search region Y (0.0-1.0)' },
+                            width: { type: 'number', description: 'Search region width (0.0-1.0)' },
+                            height: { type: 'number', description: 'Search region height (0.0-1.0)' }
+                        }
+                    }
+                },
+                required: ['targetDescription']
+            }
+        });
+
+        this.addTool({
+            name: 'tap_coordinates',
+            description: 'Tap at specific coordinates with various coordinate systems',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    x: {
+                        type: 'number',
+                        description: 'X coordinate'
+                    },
+                    y: {
+                        type: 'number',
+                        description: 'Y coordinate'
+                    },
+                    coordinateSystem: {
+                        type: 'string',
+                        enum: ['absolute', 'relative', 'relative_to_element'],
+                        description: 'Coordinate system type',
+                        default: 'absolute'
+                    },
+                    referenceElement: {
+                        type: 'object',
+                        properties: {
+                            strategy: { type: 'string' },
+                            selector: { type: 'string' }
+                        },
+                        description: 'Reference element for relative coordinates'
+                    },
+                    duration: {
+                        type: 'number',
+                        description: 'Tap duration in milliseconds',
+                        default: 100
+                    }
+                },
+                required: ['x', 'y']
+            }
+        });
+
         // Register tool handlers
         this.registerTool('appium_connect', this.handleConnect.bind(this));
         this.registerTool('appium_disconnect', this.handleDisconnect.bind(this));
@@ -676,6 +819,9 @@ class AppiumMCPServer extends BaseMCPServer {
         this.registerTool('smart_wait', this.handleSmartWait.bind(this));
         this.registerTool('handle_popup', this.handlePopup.bind(this));
         this.registerTool('capture_state', this.handleCaptureState.bind(this));
+        this.registerTool('smart_find_and_click', this.handleSmartFindAndClick.bind(this));
+        this.registerTool('analyze_screenshot', this.handleAnalyzeScreenshot.bind(this));
+        this.registerTool('tap_coordinates', this.handleTapCoordinates.bind(this));
     }
 
     async ensureConnection() {
@@ -2310,6 +2456,523 @@ class AppiumMCPServer extends BaseMCPServer {
             );
         } catch (error) {
             return this.createErrorResponse('capture_state', error);
+        }
+    }
+
+    // AI-powered screenshot analysis methods
+    async analyzeScreenshotForElement(screenshotPath, targetDescription, options = {}) {
+        try {
+            // Read screenshot
+            const screenshotBuffer = await fs.readFile(screenshotPath);
+            const screenshotBase64 = screenshotBuffer.toString('base64');
+            
+            // Get current window size for coordinate conversion
+            const windowSize = await this.driver.getWindowSize();
+            
+            // Basic pattern matching for common UI elements
+            const analysis = await this.performBasicScreenshotAnalysis(
+                screenshotBase64, 
+                targetDescription, 
+                windowSize,
+                options
+            );
+            
+            return analysis;
+        } catch (error) {
+            console.warn('Screenshot analysis failed:', error.message);
+            return null;
+        }
+    }
+
+    async performBasicScreenshotAnalysis(screenshotBase64, targetDescription, windowSize, options = {}) {
+        // This is a simplified implementation. In a real scenario, you might use:
+        // - Google Vision API for text detection
+        // - OpenCV for image processing
+        // - ML models for UI element classification
+        
+        const analysis = {
+            windowSize,
+            suggestions: [],
+            confidence: 0,
+            method: 'basic_pattern_matching'
+        };
+
+        try {
+            // If we have page source, try to correlate with screenshot
+            const pageSource = await this.driver.getPageSource();
+            const elements = await this.extractElementsFromPageSource(pageSource);
+            
+            // Find elements that match the target description
+            const matchingElements = elements.filter(el => 
+                this.matchesDescription(el, targetDescription, options.textToFind)
+            );
+
+            if (matchingElements.length > 0) {
+                // Try to get actual coordinates for matching elements
+                for (const element of matchingElements) {
+                    try {
+                        const webElement = await this.findElementByStrategy(
+                            element.strategy, 
+                            element.selector, 
+                            1000
+                        );
+                        
+                        const location = await webElement.getLocation();
+                        const size = await webElement.getSize();
+                        
+                        analysis.suggestions.push({
+                            description: `${element.text || element.contentDesc || element.resourceId}`,
+                            coordinates: {
+                                x: location.x + (size.width / 2),
+                                y: location.y + (size.height / 2),
+                                absoluteX: location.x + (size.width / 2),
+                                absoluteY: location.y + (size.height / 2),
+                                relativeX: (location.x + (size.width / 2)) / windowSize.width,
+                                relativeY: (location.y + (size.height / 2)) / windowSize.height
+                            },
+                            bounds: {
+                                x: location.x,
+                                y: location.y,
+                                width: size.width,
+                                height: size.height
+                            },
+                            confidence: this.calculateConfidence(element, targetDescription, options.textToFind),
+                            element: element,
+                            method: 'page_source_correlation'
+                        });
+                    } catch (error) {
+                        // Element might not be accessible, continue with others
+                    }
+                }
+            }
+
+            // If no direct matches, try heuristic positioning
+            if (analysis.suggestions.length === 0) {
+                analysis.suggestions = await this.generateHeuristicSuggestions(
+                    targetDescription, 
+                    windowSize, 
+                    options
+                );
+            }
+
+            // Sort by confidence
+            analysis.suggestions.sort((a, b) => b.confidence - a.confidence);
+            analysis.confidence = analysis.suggestions.length > 0 ? analysis.suggestions[0].confidence : 0;
+
+        } catch (error) {
+            console.warn('Page source correlation failed:', error.message);
+        }
+
+        return analysis;
+    }
+
+    async extractElementsFromPageSource(pageSource) {
+        const elements = [];
+        
+        // Parse XML and extract relevant elements
+        const elementRegex = /<([^>]+)([^>]*?)(?:\/>|>[^<]*<\/[^>]+>)/g;
+        let match;
+
+        while ((match = elementRegex.exec(pageSource)) !== null) {
+            const tag = match[1];
+            const attributes = match[2];
+            
+            // Extract key attributes
+            const element = {
+                tag,
+                resourceId: this.extractAttribute(attributes, 'resource-id'),
+                contentDesc: this.extractAttribute(attributes, 'content-desc'),
+                text: this.extractAttribute(attributes, 'text'),
+                className: this.extractAttribute(attributes, 'class'),
+                bounds: this.extractAttribute(attributes, 'bounds'),
+                clickable: this.extractAttribute(attributes, 'clickable') === 'true',
+                enabled: this.extractAttribute(attributes, 'enabled') === 'true'
+            };
+
+            // Determine best strategy for finding this element
+            if (element.resourceId) {
+                element.strategy = 'id';
+                element.selector = element.resourceId;
+            } else if (element.contentDesc) {
+                element.strategy = 'contentDescription';
+                element.selector = element.contentDesc;
+            } else if (element.text && element.text.trim()) {
+                element.strategy = 'text';
+                element.selector = element.text;
+            } else {
+                element.strategy = 'xpath';
+                element.selector = `//*[@class="${element.className}"]`;
+            }
+
+            elements.push(element);
+        }
+
+        return elements;
+    }
+
+    extractAttribute(attributeString, attributeName) {
+        const regex = new RegExp(`${attributeName}="([^"]*)"`, 'i');
+        const match = attributeString.match(regex);
+        return match ? match[1] : null;
+    }
+
+    matchesDescription(element, targetDescription, textToFind) {
+        const description = targetDescription.toLowerCase();
+        const text = textToFind ? textToFind.toLowerCase() : '';
+        
+        // Check text content
+        if (textToFind && element.text && element.text.toLowerCase().includes(text)) {
+            return true;
+        }
+        
+        if (textToFind && element.contentDesc && element.contentDesc.toLowerCase().includes(text)) {
+            return true;
+        }
+
+        // Check by description keywords
+        const elementText = (element.text || '').toLowerCase();
+        const elementDesc = (element.contentDesc || '').toLowerCase();
+        const elementId = (element.resourceId || '').toLowerCase();
+
+        if (description.includes('button') && (
+            element.tag.includes('Button') || 
+            elementText.includes('button') ||
+            elementDesc.includes('button') ||
+            elementId.includes('btn')
+        )) {
+            return true;
+        }
+
+        if (description.includes('login') && (
+            elementText.includes('login') ||
+            elementDesc.includes('login') ||
+            elementId.includes('login')
+        )) {
+            return true;
+        }
+
+        if (description.includes('input') || description.includes('field')) {
+            if (element.tag.includes('EditText') || element.tag.includes('TextField')) {
+                return true;
+            }
+        }
+
+        // Keyword matching
+        const keywords = description.split(' ');
+        for (const keyword of keywords) {
+            if (keyword.length > 2) { // Ignore short words
+                if (elementText.includes(keyword) || 
+                    elementDesc.includes(keyword) || 
+                    elementId.includes(keyword)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    calculateConfidence(element, targetDescription, textToFind) {
+        let confidence = 0;
+
+        // Exact text match
+        if (textToFind && element.text && element.text.toLowerCase() === textToFind.toLowerCase()) {
+            confidence += 0.8;
+        } else if (textToFind && element.text && element.text.toLowerCase().includes(textToFind.toLowerCase())) {
+            confidence += 0.6;
+        }
+
+        // Content description match
+        if (textToFind && element.contentDesc && element.contentDesc.toLowerCase().includes(textToFind.toLowerCase())) {
+            confidence += 0.5;
+        }
+
+        // Clickable and enabled elements are more likely to be targets
+        if (element.clickable) confidence += 0.2;
+        if (element.enabled) confidence += 0.1;
+
+        // Resource ID relevance
+        if (element.resourceId && targetDescription.toLowerCase().split(' ').some(word => 
+            element.resourceId.toLowerCase().includes(word))) {
+            confidence += 0.3;
+        }
+
+        return Math.min(confidence, 1.0);
+    }
+
+    async generateHeuristicSuggestions(targetDescription, windowSize, options = {}) {
+        const suggestions = [];
+        
+        // Common UI patterns based on description
+        if (targetDescription.toLowerCase().includes('login')) {
+            // Login buttons are often at the bottom center
+            suggestions.push({
+                description: 'Bottom center (common login button position)',
+                coordinates: {
+                    x: windowSize.width * 0.5,
+                    y: windowSize.height * 0.8,
+                    relativeX: 0.5,
+                    relativeY: 0.8
+                },
+                confidence: 0.4,
+                method: 'heuristic_pattern'
+            });
+        }
+
+        if (targetDescription.toLowerCase().includes('continue') || targetDescription.toLowerCase().includes('next')) {
+            // Continue/Next buttons are often bottom right or center
+            suggestions.push({
+                description: 'Bottom right (common continue button position)',
+                coordinates: {
+                    x: windowSize.width * 0.8,
+                    y: windowSize.height * 0.85,
+                    relativeX: 0.8,
+                    relativeY: 0.85
+                },
+                confidence: 0.3,
+                method: 'heuristic_pattern'
+            });
+        }
+
+        if (targetDescription.toLowerCase().includes('close') || targetDescription.toLowerCase().includes('dismiss')) {
+            // Close buttons are often top right
+            suggestions.push({
+                description: 'Top right (common close button position)',
+                coordinates: {
+                    x: windowSize.width * 0.9,
+                    y: windowSize.height * 0.1,
+                    relativeX: 0.9,
+                    relativeY: 0.1
+                },
+                confidence: 0.3,
+                method: 'heuristic_pattern'
+            });
+        }
+
+        // Add coordinate hints if provided
+        if (options.coordinateHints) {
+            const hints = options.coordinateHints;
+            suggestions.push({
+                description: 'User-provided coordinate hint',
+                coordinates: {
+                    x: windowSize.width * hints.x,
+                    y: windowSize.height * hints.y,
+                    relativeX: hints.x,
+                    relativeY: hints.y
+                },
+                confidence: 0.7,
+                method: 'coordinate_hint'
+            });
+        }
+
+        return suggestions;
+    }
+
+    async handleSmartFindAndClick(args) {
+        try {
+            this.validateRequiredParams(args, ['strategy', 'selector']);
+            await this.ensureConnection();
+
+            const { strategy, selector, fallbackOptions = {}, timeout = 10000 } = args;
+
+            return await this.performActionWithStateCapture('smart_find_and_click', async () => {
+                // First, try traditional element finding
+                try {
+                    const element = await this.findElementByStrategy(strategy, selector, timeout);
+                    await element.click();
+                    
+                    return this.createSuccessResponse(`✅ Element clicked using primary strategy: ${strategy}`, {
+                        method: 'primary_strategy',
+                        strategy,
+                        selector,
+                        success: true
+                    });
+                } catch (primaryError) {
+                    console.log(`Primary strategy failed: ${primaryError.message}, trying fallback methods...`);
+                    
+                    // If primary strategy fails and screenshot analysis is enabled, try fallback
+                    if (fallbackOptions.enableScreenshotAnalysis !== false) {
+                        return await this.attemptCoordinateBasedClick(
+                            selector, 
+                            strategy, 
+                            fallbackOptions, 
+                            primaryError
+                        );
+                    } else {
+                        throw primaryError;
+                    }
+                }
+            }, args);
+        } catch (error) {
+            return this.createErrorResponse('smart_find_and_click', error);
+        }
+    }
+
+    async attemptCoordinateBasedClick(originalSelector, originalStrategy, fallbackOptions, primaryError) {
+        try {
+            // Take a fresh screenshot for analysis
+            const screenshotPath = path.join(this.autoStateCapture.outputDir, `fallback_analysis_${Date.now()}.png`);
+            await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
+            
+            const screenshot = await this.driver.takeScreenshot();
+            await fs.writeFile(screenshotPath, screenshot, 'base64');
+
+            // Analyze screenshot to find target element
+            const targetDescription = fallbackOptions.textToFind || originalSelector;
+            const analysis = await this.analyzeScreenshotForElement(
+                screenshotPath, 
+                targetDescription, 
+                fallbackOptions
+            );
+
+            if (!analysis || analysis.suggestions.length === 0) {
+                throw new Error(`No fallback coordinates found for: ${originalSelector}`);
+            }
+
+            // Try the best suggestion
+            const bestSuggestion = analysis.suggestions[0];
+            
+            if (bestSuggestion.confidence < this.coordinateFallback.confidenceThreshold) {
+                console.warn(`Low confidence (${bestSuggestion.confidence}) for coordinate fallback`);
+            }
+
+            // Perform coordinate-based click
+            await this.performCoordinateClick(bestSuggestion.coordinates.x, bestSuggestion.coordinates.y);
+
+            return this.createSuccessResponse(
+                `✅ Element clicked using coordinate fallback (confidence: ${bestSuggestion.confidence.toFixed(2)})`,
+                {
+                    method: 'coordinate_fallback',
+                    originalError: primaryError.message,
+                    fallbackCoordinates: bestSuggestion.coordinates,
+                    confidence: bestSuggestion.confidence,
+                    analysisMethod: bestSuggestion.method,
+                    description: bestSuggestion.description,
+                    allSuggestions: analysis.suggestions.map(s => ({
+                        description: s.description,
+                        confidence: s.confidence,
+                        coordinates: s.coordinates
+                    }))
+                }
+            );
+        } catch (fallbackError) {
+            throw new Error(`Primary strategy failed: ${primaryError.message}. Fallback also failed: ${fallbackError.message}`);
+        }
+    }
+
+    async performCoordinateClick(x, y, duration = 100) {
+        if (this.currentPlatform === 'iOS') {
+            await this.driver.execute('mobile: tap', {
+                x: Math.round(x),
+                y: Math.round(y)
+            });
+        } else {
+            await this.driver.touchAction({
+                action: 'tap',
+                x: Math.round(x),
+                y: Math.round(y)
+            });
+        }
+        
+        // Wait for any UI response
+        await this.driver.pause(duration);
+    }
+
+    async handleAnalyzeScreenshot(args) {
+        try {
+            this.validateRequiredParams(args, ['targetDescription']);
+            await this.ensureConnection();
+
+            const { targetDescription, textToFind, elementType = 'any', region } = args;
+
+            // Take screenshot for analysis
+            const screenshotPath = path.join(this.autoStateCapture.outputDir, `analysis_${Date.now()}.png`);
+            await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
+            
+            const screenshot = await this.driver.takeScreenshot();
+            await fs.writeFile(screenshotPath, screenshot, 'base64');
+
+            // Perform analysis
+            const analysis = await this.analyzeScreenshotForElement(
+                screenshotPath,
+                targetDescription,
+                { textToFind, elementType, region }
+            );
+
+            if (!analysis) {
+                return this.createErrorResponse('analyze_screenshot', 
+                    new Error('Screenshot analysis failed'));
+            }
+
+            return this.createSuccessResponse(
+                `Screenshot analyzed, found ${analysis.suggestions.length} suggestions`,
+                {
+                    targetDescription,
+                    textToFind,
+                    windowSize: analysis.windowSize,
+                    suggestions: analysis.suggestions,
+                    bestMatch: analysis.suggestions[0] || null,
+                    confidence: analysis.confidence,
+                    screenshotPath,
+                    analysisMethod: analysis.method
+                }
+            );
+        } catch (error) {
+            return this.createErrorResponse('analyze_screenshot', error);
+        }
+    }
+
+    async handleTapCoordinates(args) {
+        try {
+            this.validateRequiredParams(args, ['x', 'y']);
+            await this.ensureConnection();
+
+            const { 
+                x, 
+                y, 
+                coordinateSystem = 'absolute', 
+                referenceElement,
+                duration = 100 
+            } = args;
+
+            return await this.performActionWithStateCapture('tap_coordinates', async () => {
+                let finalX = x;
+                let finalY = y;
+
+                if (coordinateSystem === 'relative') {
+                    // Convert relative coordinates (0.0-1.0) to absolute
+                    const windowSize = await this.driver.getWindowSize();
+                    finalX = windowSize.width * x;
+                    finalY = windowSize.height * y;
+                } else if (coordinateSystem === 'relative_to_element' && referenceElement) {
+                    // Find reference element and calculate relative position
+                    const refElement = await this.findElementByStrategy(
+                        referenceElement.strategy, 
+                        referenceElement.selector, 
+                        5000
+                    );
+                    const refLocation = await refElement.getLocation();
+                    const refSize = await refElement.getSize();
+                    
+                    finalX = refLocation.x + (refSize.width * x);
+                    finalY = refLocation.y + (refSize.height * y);
+                }
+
+                await this.performCoordinateClick(finalX, finalY, duration);
+
+                return this.createSuccessResponse(
+                    `✅ Tapped at coordinates (${Math.round(finalX)}, ${Math.round(finalY)})`,
+                    {
+                        originalCoordinates: { x, y },
+                        finalCoordinates: { x: Math.round(finalX), y: Math.round(finalY) },
+                        coordinateSystem,
+                        duration,
+                        referenceElement: referenceElement || null
+                    }
+                );
+            }, args);
+        } catch (error) {
+            return this.createErrorResponse('tap_coordinates', error);
         }
     }
 }
