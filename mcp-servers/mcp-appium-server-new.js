@@ -782,6 +782,7 @@ class AppiumMCPServer extends BaseMCPServer {
                         'appium:deviceName': deviceName,
                         'appium:platformVersion': platformVersion,
                         'appium:noReset': true,
+                        'appium:newCommandTimeout': 600,
                     },
                 },
             };
@@ -915,46 +916,74 @@ class AppiumMCPServer extends BaseMCPServer {
                     connected: false,
                     platform: null,
                     sessionActive: false,
+                    connectionConfig: this.connectionConfig ? {
+                        hostname: this.connectionConfig.hostname,
+                        port: this.connectionConfig.port,
+                        deviceName: this.connectionConfig.capabilities?.alwaysMatch?.['appium:deviceName'] || 'Unknown',
+                        platformVersion: this.connectionConfig.capabilities?.alwaysMatch?.['appium:platformVersion'] || 'Unknown'
+                    } : null
                 });
             }
 
             let currentInfo = { 
-                connected: true, 
+                connected: this.isConnected, 
                 platform: this.currentPlatform,
-                sessionActive: true,
+                sessionActive: false,
                 lastActivity: new Date(this.lastActivity).toISOString(),
                 connectionConfig: this.connectionConfig ? {
                     hostname: this.connectionConfig.hostname,
                     port: this.connectionConfig.port,
-                    deviceName: this.connectionConfig.capabilities.alwaysMatch['appium:deviceName'],
-                    platformVersion: this.connectionConfig.capabilities.alwaysMatch['appium:platformVersion']
+                    deviceName: this.connectionConfig.capabilities?.alwaysMatch?.['appium:deviceName'] || 'Unknown',
+                    platformVersion: this.connectionConfig.capabilities?.alwaysMatch?.['appium:platformVersion'] || 'Unknown',
+                    udid: this.connectionConfig.capabilities?.alwaysMatch?.['appium:udid']
                 } : null
             };
             
             try {
-                // Test if session is still alive
-                await this.driver.getWindowSize();
+                // Test if session is still alive with a lightweight operation
+                const windowSize = await this.driver.getWindowSize();
+                currentInfo.sessionActive = true;
+                currentInfo.windowSize = windowSize;
                 this.lastActivity = Date.now();
                 
+                // Get platform-specific information
                 if (this.currentPlatform === 'Android') {
-                    currentInfo.currentActivity = await this.driver.getCurrentActivity();
-                    currentInfo.currentPackage = await this.driver.getCurrentPackage();
-                } else if (this.currentPlatform === 'iOS') {
-                    // For iOS, we can get page source info or other available details
                     try {
+                        currentInfo.currentActivity = await this.driver.getCurrentActivity();
+                        currentInfo.currentPackage = await this.driver.getCurrentPackage();
+                    } catch (e) {
+                        console.warn('Could not get Android app info:', e.message);
+                        currentInfo.androidInfoError = e.message;
+                    }
+                } else if (this.currentPlatform === 'iOS') {
+                    try {
+                        currentInfo.orientation = await this.driver.getOrientation();
+                        // Try to get page source length as a health indicator
                         const source = await this.driver.getPageSource();
                         currentInfo.pageSourceLength = source.length;
+                        currentInfo.hasContent = source.length > 100;
                     } catch (e) {
-                        // Ignore if not available
+                        console.warn('Could not get iOS info:', e.message);
+                        currentInfo.iosInfoError = e.message;
                     }
                 }
+                
+                return this.createSuccessResponse('Device connection active and healthy', currentInfo);
             } catch (e) {
-                console.warn('Could not get current app info:', e.message);
+                console.warn('Session validation failed:', e.message);
                 currentInfo.sessionActive = false;
-                currentInfo.error = e.message;
+                currentInfo.sessionError = e.message;
+                
+                // Mark as disconnected if session is dead
+                if (e.message.includes('session') || e.message.includes('Session') || 
+                    e.message.includes('connection') || e.message.includes('timeout')) {
+                    this.isConnected = false;
+                    currentInfo.connected = false;
+                    currentInfo.needsReconnection = true;
+                }
+                
+                return this.createSuccessResponse('Connection exists but session is not healthy', currentInfo);
             }
-
-            return this.createSuccessResponse('Device connection active', currentInfo);
         } catch (error) {
             return this.createErrorResponse('appium_status', error);
         }
@@ -1095,7 +1124,7 @@ class AppiumMCPServer extends BaseMCPServer {
 
             const { strategy, selector, timeout = 10000 } = args;
 
-            // Use state capture wrapper for this action
+            // Use state capture wrapper for this action - it will automatically capture state before action
             return await this.performActionWithStateCapture('click_element', async () => {
                 // Wait for element to be clickable
                 const element = await this.findElementByStrategy(strategy, selector, timeout);
@@ -1118,12 +1147,13 @@ class AppiumMCPServer extends BaseMCPServer {
                 // Wait a moment for any immediate UI changes
                 await this.driver.pause(500);
 
-                return this.createSuccessResponse(`Element clicked: ${selector}`, {
+                return this.createSuccessResponse(`✅ Element clicked: ${selector}`, {
                     selector,
                     strategy,
                     wasEnabled: isEnabled,
                     wasDisplayed: isDisplayed,
-                    clickPerformed: true
+                    clickPerformed: true,
+                    note: "State automatically captured before action - check stateCapture field for details"
                 });
             }, args);
         } catch (error) {
@@ -1140,7 +1170,7 @@ class AppiumMCPServer extends BaseMCPServer {
                 strategy, selector, text, timeout = 10000,
             } = args;
 
-            // Use state capture wrapper for this action
+            // Use state capture wrapper for this action - it will automatically capture state before action
             return await this.performActionWithStateCapture('type_text', async () => {
                 // Wait for element to be available for input
                 const element = await this.findElementByStrategy(strategy, selector, timeout);
@@ -1184,13 +1214,14 @@ class AppiumMCPServer extends BaseMCPServer {
                     verificationResult = { note: 'Text verification not supported for this element type' };
                 }
 
-                return this.createSuccessResponse(`Text typed: ${text}`, {
+                return this.createSuccessResponse(`✅ Text typed: ${text}`, {
                     selector,
                     strategy,
                     text,
                     wasEnabled: isEnabled,
                     wasDisplayed: isDisplayed,
-                    verification: verificationResult
+                    verification: verificationResult,
+                    note: "State automatically captured before action - check stateCapture field for details"
                 });
             }, args);
         } catch (error) {
@@ -1207,7 +1238,7 @@ class AppiumMCPServer extends BaseMCPServer {
                 startX, startY, endX, endY, duration = 1000,
             } = args;
 
-            // Use state capture wrapper for this action
+            // Use state capture wrapper for this action - it will automatically capture state before action
             return await this.performActionWithStateCapture('swipe', async () => {
                 if (this.currentPlatform === 'iOS') {
                     // Use iOS-specific gesture for swiping
@@ -1229,7 +1260,15 @@ class AppiumMCPServer extends BaseMCPServer {
                 }
 
                 return this.createSuccessResponse(
-                    `Swipe performed from (${startX},${startY}) to (${endX},${endY})`,
+                    `✅ Swipe performed from (${startX},${startY}) to (${endX},${endY})`,
+                    {
+                        startX,
+                        startY,
+                        endX,
+                        endY,
+                        duration,
+                        note: "State automatically captured before action - check stateCapture field for details"
+                    }
                 );
             }, args);
         } catch (error) {
@@ -1450,7 +1489,7 @@ class AppiumMCPServer extends BaseMCPServer {
             id: `#${selector}`,
             xpath: selector,
             className: `.${selector}`,
-            text: this.currentPlatform === 'iOS' ? `//*[@label="${selector}" or @name="${selector}" or @value="${selector}"]` : `//*[@text="${selector}"]`,
+            text: this.currentPlatform === 'iOS' ? `//*[@label="${selector}" or @name="${selector}" or @value="${selector}"]` : `//*[@text="${selector}" or @content-desc="${selector}"]`,
             contentDescription: this.currentPlatform === 'iOS' ? `//*[@label="${selector}" or @name="${selector}"]` : `//*[@content-desc="${selector}"]`,
             accessibilityId: `~${selector}`,
             iosClassChain: selector, // iOS-specific class chain selector
@@ -1618,15 +1657,28 @@ class AppiumMCPServer extends BaseMCPServer {
 
         // Add capture information to result if captured
         if (preActionCapture) {
+            // Read the page source content for immediate access
+            let pageSourceContent = null;
+            try {
+                if (preActionCapture.pageSourcePath) {
+                    pageSourceContent = await fs.readFile(preActionCapture.pageSourcePath, 'utf8');
+                }
+            } catch (error) {
+                console.warn('Could not read page source for state capture:', error.message);
+            }
+
             result.stateCapture = {
                 preActionCapture: {
                     id: preActionCapture.id,
                     timestamp: preActionCapture.timestamp,
                     screenshotPath: preActionCapture.screenshotPath,
                     pageSourcePath: preActionCapture.pageSourcePath,
-                    captureTime: preActionCapture.captureTime
+                    captureTime: preActionCapture.captureTime,
+                    // Include actual page source content
+                    pageSource: pageSourceContent,
+                    elementCount: pageSourceContent ? (pageSourceContent.match(/<[^/][^>]*>/g) || []).length : 0
                 },
-                message: `State captured before ${actionName}. Screenshot: ${preActionCapture.screenshotPath ? 'available' : 'failed'}, Page source: ${preActionCapture.pageSourcePath ? 'available' : 'failed'}`
+                message: `State captured before ${actionName}. Screenshot: ${preActionCapture.screenshotPath ? 'available' : 'failed'}, Page source: ${preActionCapture.pageSourcePath ? 'available' : 'failed'} (${pageSourceContent ? (pageSourceContent.match(/<[^/][^>]*>/g) || []).length : 0} elements)`
             };
         }
 
@@ -2209,6 +2261,26 @@ class AppiumMCPServer extends BaseMCPServer {
             };
 
             if (capture) {
+                // Read the actual page source content to include in response
+                let pageSourceContent = null;
+                let screenshotBase64 = null;
+                
+                try {
+                    if (capture.pageSourcePath) {
+                        pageSourceContent = await fs.readFile(capture.pageSourcePath, 'utf8');
+                    }
+                } catch (error) {
+                    console.warn('Could not read page source file:', error.message);
+                }
+
+                try {
+                    if (capture.screenshotPath) {
+                        screenshotBase64 = await fs.readFile(capture.screenshotPath, 'base64');
+                    }
+                } catch (error) {
+                    console.warn('Could not read screenshot file:', error.message);
+                }
+
                 result.capture = {
                     id: capture.id,
                     timestamp: capture.timestamp,
@@ -2218,6 +2290,10 @@ class AppiumMCPServer extends BaseMCPServer {
                     windowInfo: capture.windowInfo,
                     appContext: capture.appContext,
                     captureTime: capture.captureTime,
+                    // Include actual content for immediate analysis
+                    pageSource: pageSourceContent,
+                    screenshotBase64: screenshotBase64 ? `data:image/png;base64,${screenshotBase64}` : null,
+                    elementCount: pageSourceContent ? (pageSourceContent.match(/<[^/][^>]*>/g) || []).length : 0
                 };
             }
 
@@ -2228,7 +2304,7 @@ class AppiumMCPServer extends BaseMCPServer {
 
             return this.createSuccessResponse(
                 capture ? 
-                    `State captured successfully: ${capture.id}` : 
+                    `State captured successfully: ${capture.id} (${result.capture.elementCount} elements found)` : 
                     'State capture is disabled or failed',
                 result
             );
