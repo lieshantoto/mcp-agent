@@ -153,13 +153,15 @@ mobile_automation_agent = LlmAgent(
     - Stop scrolling if no new content appears (reached end)
     
     SCROLL DIRECTION HEURISTICS:
+    - MOBILE-FIRST APPROACH: Default to DOWN first for most mobile scenarios
+    - Most mobile content flows downward (feeds, lists, forms, settings)
     - Buttons with "submit", "login", "continue", "next": Scroll DOWN (usually at bottom)
     - Buttons with "back", "cancel", "close": Scroll UP (usually at top)
     - Form fields (email, password, phone): Scroll DOWN (forms flow downward)
     - Menu items, navigation: Try UP first, then DOWN
-    - List items: Analyze context - if looking for alphabetically later items, scroll DOWN
-    - Settings options: Usually require DOWN scrolling
-    - When unsure: Try DOWN first (most common), then UP, then horizontal
+    - List items: Scroll DOWN first (most content is below current view)
+    - Settings options: Scroll DOWN (lists flow downward)
+    - When unsure: Try DOWN first (mobile-natural), then UP, then horizontal
     
     COUNTER RESET RULES:
     - After successful element interaction: Reset element attempts to 0/5, scroll attempts to 0/3
@@ -193,16 +195,16 @@ mobile_automation_agent = LlmAgent(
 
     3. COMPREHENSIVE OVERLAY/POPUP CLEARANCE (MANDATORY BEFORE ANY ACTION):
        - BEFORE ANY interaction with target elements, ensure NO overlays are present
-       - Use multi-layered detection and dismissal strategy
+       - Use page source analysis and smart_find_and_click for faster popup dismissal
        - Continue until page source shows no overlay indicators
        
        OVERLAY DETECTION STRATEGY (execute all steps):
        
-       Step A: System Alert Detection
-       - Use handle_popup with action "detect" to scan for native system alerts
+       Step A: Page Source Analysis First
+       - Call get_page_source to analyze current UI tree for overlay indicators
        - Look for iOS: XCUIElementTypeAlert, XCUIElementTypeSheet
-       - Look for Android: android:id/parentPanel, AlertDialog class
-       - If detected, use handle_popup with "dismiss" or "accept" as appropriate
+       - Look for Android: android:id/parentPanel, AlertDialog class, popup containers
+       - Search for overlay patterns: Modal, Dialog, Overlay, Popup, Sheet elements
        
        Step B: Page Source Overlay Analysis
        - Search page source XML for overlay indicators:
@@ -213,12 +215,14 @@ mobile_automation_agent = LlmAgent(
          * Blocking elements: "blocker", "mask", "backdrop", "curtain"
          * Tooltips: "tooltip", "hint", "tip", "callout", "bubble"
        
-       Step C: Dismissal Button Detection
+       Step C: Smart Popup Dismissal
+       - Use smart_find_and_click to dismiss detected overlays with built-in fallback
        - Search for common dismissal patterns in page source:
          * Close buttons: "close", "×", "✕", "dismiss", "cancel"
          * Skip buttons: "skip", "later", "not now", "maybe later"
          * Accept buttons: "ok", "got it", "continue", "next", "allow"
          * Deny buttons: "deny", "don't allow", "block", "refuse"
+       - Prefer accessibility IDs and resource IDs for reliable dismissal
        
        Step D: Coordinate-based Fallback
        - If overlays detected but no dismissal buttons found:
@@ -270,7 +274,7 @@ mobile_automation_agent = LlmAgent(
        ```
        strategy: "text"
        selector: "Submit"
-       direction: "down"  # Based on button type heuristic
+       direction: "down"  # Try DOWN first for mobile (most content is below)
        maxScrolls: 3
        ```
 
@@ -313,8 +317,7 @@ mobile_automation_agent = LlmAgent(
     - scroll_to_element: Intelligent scrolling to find elements (USE WHEN ELEMENT NOT FOUND)
     - analyze_screenshot: Analyze screen to find elements and suggest coordinates
     - tap_coordinates: Direct coordinate-based interaction (absolute/relative/element-relative)
-    - get_page_source: Get current page source XML efficiently
-    - handle_popup: Detect and dismiss popups/tooltips/alerts
+    - get_page_source: Get current page source XML efficiently for popup detection and element analysis
     - swipe: Manual gesture when scroll_to_element is not available
     
     MANDATORY RULES:

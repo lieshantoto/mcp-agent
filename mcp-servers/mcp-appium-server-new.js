@@ -489,7 +489,7 @@ class AppiumMCPServer extends BaseMCPServer {
 
         this.addTool({
             name: 'scroll_to_element',
-            description: 'Scroll to find and display an element on screen',
+            description: 'Intelligently scroll to find and display an element on screen with smart detection and container optimization',
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -505,18 +505,33 @@ class AppiumMCPServer extends BaseMCPServer {
                     direction: {
                         type: 'string',
                         enum: ['up', 'down', 'left', 'right'],
-                        description: 'Scroll direction',
+                        description: 'Scroll direction (default: down)',
                         default: 'down',
                     },
                     maxScrolls: {
                         type: 'number',
-                        description: 'Maximum number of scroll attempts',
-                        default: 10,
+                        description: 'Maximum number of scroll attempts (default: 15)',
+                        default: 15,
                     },
                     scrollDistance: {
                         type: 'number',
-                        description: 'Distance to scroll in pixels',
+                        description: 'Distance to scroll in pixels (default: 300, will be optimized based on screen size)',
                         default: 300,
+                    },
+                    detectScrollableContainers: {
+                        type: 'boolean',
+                        description: 'Whether to detect and target scrollable containers for better accuracy (default: true)',
+                        default: true,
+                    },
+                    smartScrollDetection: {
+                        type: 'boolean',
+                        description: 'Enable smart detection to prevent getting stuck at content boundaries (default: true)',
+                        default: true,
+                    },
+                    waitAfterScroll: {
+                        type: 'number',
+                        description: 'Time to wait after each scroll for UI to settle (default: 800ms)',
+                        default: 800,
                     },
                 },
                 required: ['strategy', 'selector'],
@@ -609,36 +624,7 @@ class AppiumMCPServer extends BaseMCPServer {
             },
         });
 
-        this.addTool({
-            name: 'handle_popup',
-            description: 'Detect and handle popup dialogs',
-            inputSchema: {
-                type: 'object',
-                properties: {
-                    action: {
-                        type: 'string',
-                        enum: ['detect', 'dismiss', 'accept', 'wait_and_dismiss'],
-                        description: 'Action to take on popup',
-                        default: 'detect',
-                    },
-                    timeout: {
-                        type: 'number',
-                        description: 'Timeout in milliseconds',
-                        default: 5000,
-                    },
-                    actionButton: {
-                        type: 'string',
-                        description: 'Button text to click',
-                        default: 'OK',
-                    },
-                    popupSelector: {
-                        type: 'string',
-                        description: 'Popup element selector',
-                    },
-                },
-                required: [],
-            },
-        });
+
 
         this.addTool({
             name: 'capture_state',
@@ -662,7 +648,7 @@ class AppiumMCPServer extends BaseMCPServer {
 
         this.addTool({
             name: 'smart_find_and_click',
-            description: 'Intelligently find and click elements using multiple strategies including AI-powered screenshot analysis',
+            description: 'Intelligently find and click elements using multiple strategies including scrolling and AI-powered screenshot analysis',
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -716,6 +702,22 @@ class AppiumMCPServer extends BaseMCPServer {
                         type: 'number',
                         description: 'Wait timeout in milliseconds (default: 10000)',
                         default: 10000,
+                    },
+                    enableScrolling: {
+                        type: 'boolean',
+                        description: 'Enable automatic scrolling when element is not found (default: true)',
+                        default: true,
+                    },
+                    scrollDirection: {
+                        type: 'string',
+                        enum: ['up', 'down', 'left', 'right'],
+                        description: 'Primary scroll direction for element search (default: down)',
+                        default: 'down',
+                    },
+                    maxScrollAttempts: {
+                        type: 'number',
+                        description: 'Maximum scroll attempts before fallback (default: 8)',
+                        default: 8,
                     },
                 },
                 required: ['strategy', 'selector'],
@@ -817,7 +819,6 @@ class AppiumMCPServer extends BaseMCPServer {
         this.registerTool('scroll_to_element', this.handleScrollToElement.bind(this));
         this.registerTool('verify_action_result', this.handleVerifyActionResult.bind(this));
         this.registerTool('smart_wait', this.handleSmartWait.bind(this));
-        this.registerTool('handle_popup', this.handlePopup.bind(this));
         this.registerTool('capture_state', this.handleCaptureState.bind(this));
         this.registerTool('smart_find_and_click', this.handleSmartFindAndClick.bind(this));
         this.registerTool('analyze_screenshot', this.handleAnalyzeScreenshot.bind(this));
@@ -1944,65 +1945,419 @@ class AppiumMCPServer extends BaseMCPServer {
         try {
             await this.ensureConnection();
 
-            const { selector, selectorType = 'xpath', direction = 'down', maxScrolls = 10, scrollDistance = 300 } = args;
+            const { 
+                strategy = 'xpath', 
+                selector, 
+                direction = 'up', 
+                maxScrolls = 15, 
+                scrollDistance = 300,
+                detectScrollableContainers = true,
+                smartScrollDetection = true,
+                waitAfterScroll = 800
+            } = args;
 
-            console.log(`Scrolling to find element: ${selector} (${selectorType})`);
+            console.log(`🔍 Scrolling to find element: ${selector} (${strategy}) in direction: ${direction}`);
 
             let scrollCount = 0;
             let element = null;
+            let lastPageSource = '';
+            let stuckCounter = 0;
+            const maxStuckAttempts = 5; // Increased to ensure we reach the actual end
+
+            // First try to find the element without scrolling
+            try {
+                element = await this.findElementByStrategy(strategy, selector, 1000);
+                const displayed = await element.isDisplayed();
+                const enabled = await element.isEnabled();
+                
+                if (displayed && enabled) {
+                    console.log(`✅ Element already visible and clickable: ${selector}`);
+                    return this.createSuccessResponse(
+                        `✅ Element already visible and clickable: ${selector}`,
+                        {
+                            found: true,
+                            selector,
+                            strategy,
+                            scrollsPerformed: 0,
+                            direction,
+                            method: 'no_scroll_needed',
+                            elementState: { displayed, enabled }
+                        }
+                    );
+                } else if (displayed && !enabled) {
+                    console.log(`⚠️ Element visible but not enabled: ${selector} - will try scrolling to find enabled version`);
+                } else {
+                    console.log(`⚠️ Element found but not displayed: ${selector} - will try scrolling`);
+                }
+            } catch (error) {
+                console.log(`Element not immediately visible, starting scroll search: ${error.message}`);
+            }
+
+            // Get window dimensions for scroll calculations
+            const windowSize = await this.driver.getWindowSize();
+            console.log(`📱 Window size: ${windowSize.width}x${windowSize.height}`);
+
+            // Detect scrollable containers if enabled
+            let scrollableArea = null;
+            if (detectScrollableContainers) {
+                scrollableArea = await this.detectScrollableContainer();
+                if (scrollableArea) {
+                    console.log(`📜 Found scrollable container: ${scrollableArea.type} at ${scrollableArea.bounds}`);
+                }
+            }
+
+            // Store initial page source for stuck detection
+            if (smartScrollDetection) {
+                try {
+                    lastPageSource = await this.driver.getPageSource();
+                } catch (error) {
+                    console.warn(`Could not get initial page source for smart detection: ${error.message}`);
+                    // Continue without smart detection
+                }
+            }
 
             while (scrollCount < maxScrolls) {
-                try {
-                    // Try to find the element
-                    element = await this.driver.$(selector);
-                    const exists = await element.isExisting();
-                    const displayed = exists ? await element.isDisplayed() : false;
+                console.log(`🔄 Scroll attempt ${scrollCount + 1}/${maxScrolls} (direction: ${direction})`);
 
-                    if (exists && displayed) {
-                        // Element found and visible, scroll it into view if needed
-                        await element.scrollIntoView();
-                        
+                // Try to find the element before scrolling
+                try {
+                    element = await this.findElementByStrategy(strategy, selector, 500);
+                    const displayed = await element.isDisplayed();
+                    if (displayed) {
+                        console.log(`✅ Element found before scroll attempt ${scrollCount + 1}: ${selector}`);
                         return this.createSuccessResponse(
-                            `Element found and scrolled into view`,
+                            `✅ Element found before scroll attempt ${scrollCount + 1}: ${selector}`,
                             {
                                 found: true,
                                 selector,
-                                selectorType,
+                                strategy,
                                 scrollsPerformed: scrollCount,
-                                direction
+                                direction,
+                                method: 'pre_scroll_check'
                             }
                         );
                     }
                 } catch (error) {
                     // Element not found yet, continue scrolling
+                    console.log(`Element not found before scroll ${scrollCount + 1}, proceeding with scroll...`);
                 }
 
-                // Perform scroll gesture
-                const windowSize = await this.driver.getWindowSize();
-                const centerX = Math.floor(windowSize.width / 2);
-                const centerY = Math.floor(windowSize.height / 2);
-
-                let startX = centerX, startY = centerY, endX = centerX, endY = centerY;
-
-                switch (direction.toLowerCase()) {
-                    case 'down':
-                        startY = centerY + Math.floor(scrollDistance / 2);
-                        endY = centerY - Math.floor(scrollDistance / 2);
-                        break;
-                    case 'up':
-                        startY = centerY - Math.floor(scrollDistance / 2);
-                        endY = centerY + Math.floor(scrollDistance / 2);
-                        break;
-                    case 'left':
-                        startX = centerX + Math.floor(scrollDistance / 2);
-                        endX = centerX - Math.floor(scrollDistance / 2);
-                        break;
-                    case 'right':
-                        startX = centerX - Math.floor(scrollDistance / 2);
-                        endX = centerX + Math.floor(scrollDistance / 2);
-                        break;
+                // Smart scroll detection - check if we're stuck
+                if (smartScrollDetection && lastPageSource) {
+                    try {
+                        const currentPageSource = await this.driver.getPageSource();
+                        
+                        // Check if page content has changed
+                        const contentChanged = currentPageSource !== lastPageSource;
+                        
+                        if (!contentChanged) {
+                            stuckCounter++;
+                            console.log(`⚠️ Page content unchanged, stuck counter: ${stuckCounter}/${maxStuckAttempts}`);
+                            console.log(`📊 Scroll progress: ${scrollCount}/${maxScrolls} scrolls performed`);
+                            
+                            if (stuckCounter >= maxStuckAttempts) {
+                                console.log(`🛑 Stopping scroll - reached end of scrollable content after ${scrollCount} scrolls`);
+                                break;
+                            }
+                        } else {
+                            // Content changed, reset counter and update last page source
+                            if (stuckCounter > 0) {
+                                console.log(`✅ Page content changed, resetting stuck counter (was ${stuckCounter})`);
+                            }
+                            stuckCounter = 0;
+                            lastPageSource = currentPageSource;
+                        }
+                    } catch (error) {
+                        console.warn(`Could not get page source for stuck detection: ${error.message}`);
+                        // Continue scrolling without stuck detection for this iteration
+                    }
                 }
 
+                // Perform optimized scroll gesture
+                try {
+                    await this.performOptimizedScroll(direction, scrollDistance, windowSize, scrollableArea);
+                    scrollCount++;
+
+                    // Wait for UI to settle after scroll
+                    await new Promise(resolve => setTimeout(resolve, waitAfterScroll));
+
+                    // ENHANCED: Check for element visibility immediately after scroll
+                    try {
+                        element = await this.findElementByStrategy(strategy, selector, 500);
+                        const displayed = await element.isDisplayed();
+                        const enabled = await element.isEnabled();
+                        
+                        if (displayed && enabled) {
+                            console.log(`✅ Element found and clickable after scroll ${scrollCount}: ${selector}`);
+                            return this.createSuccessResponse(
+                                `✅ Element found and clickable after scroll ${scrollCount}: ${selector}`,
+                                {
+                                    found: true,
+                                    selector,
+                                    strategy,
+                                    scrollsPerformed: scrollCount,
+                                    direction,
+                                    method: 'post_scroll_check',
+                                    elementState: { displayed, enabled }
+                                }
+                            );
+                        } else if (displayed && !enabled) {
+                            console.log(`⚠️ Element found but not enabled after scroll ${scrollCount}: ${selector} - continuing scroll`);
+                        }
+                    } catch (postScrollError) {
+                        // Element not visible after this scroll, continue to next iteration
+                        console.log(`Element not found after scroll ${scrollCount}, continuing...`);
+                    }
+
+                } catch (scrollError) {
+                    console.error(`Scroll attempt ${scrollCount + 1} failed: ${scrollError.message}`);
+                    scrollCount++;
+                    // Continue to try remaining scroll attempts
+                    if (scrollCount >= maxScrolls) {
+                        break;
+                    }
+                    // Wait a bit before retrying
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+            }
+
+            // Try one final search after all scrolls
+            try {
+                element = await this.findElementByStrategy(strategy, selector, 2000);
+                const displayed = await element.isDisplayed();
+                if (displayed) {
+                    return this.createSuccessResponse(
+                        `✅ Element found in final search: ${selector}`,
+                        {
+                            found: true,
+                            selector,
+                            strategy,
+                            scrollsPerformed: scrollCount,
+                            direction,
+                            method: 'final_search'
+                        }
+                    );
+                }
+            } catch (error) {
+                // Final search failed
+            }
+
+            const failureReason = stuckCounter >= maxStuckAttempts ? 
+                'Reached end of scrollable content' : 
+                'Max scroll attempts reached';
+
+            return this.createErrorResponse('scroll_to_element', 
+                new Error(`❌ Element not found after ${scrollCount} scroll attempts: ${selector}. Reason: ${failureReason}`));
+        } catch (error) {
+            return this.createErrorResponse('scroll_to_element', error);
+        }
+    }
+
+    async detectScrollableContainer() {
+        try {
+            const pageSource = await this.driver.getPageSource();
+            
+            // Look for common scrollable containers with priority order
+            const scrollablePatterns = [
+                // iOS scrollable elements (higher priority first)
+                { pattern: 'XCUIElementTypeScrollView', priority: 1 },
+                { pattern: 'XCUIElementTypeTableView', priority: 2 },
+                { pattern: 'XCUIElementTypeCollectionView', priority: 3 },
+                { pattern: 'UIScrollView', priority: 4 },
+                { pattern: 'UITableView', priority: 5 },
+                { pattern: 'UICollectionView', priority: 6 },
+                
+                // Android scrollable elements
+                { pattern: 'androidx.recyclerview.widget.RecyclerView', priority: 1 },
+                { pattern: 'android.support.v7.widget.RecyclerView', priority: 2 },
+                { pattern: 'androidx.core.widget.NestedScrollView', priority: 3 },
+                { pattern: 'android.widget.ScrollView', priority: 4 },
+                { pattern: 'android.widget.ListView', priority: 5 },
+                { pattern: 'ScrollView', priority: 6 },
+                { pattern: 'RecyclerView', priority: 7 },
+                { pattern: 'ListView', priority: 8 }
+            ];
+
+            let bestMatch = null;
+            let bestPriority = Infinity;
+
+            for (const { pattern, priority } of scrollablePatterns) {
+                // Look for elements with scrollable attributes
+                const scrollableRegex = new RegExp(
+                    `<[^>]*${pattern}[^>]*(?:scrollable="true"|scrollable="1"|class="[^"]*scrollable[^"]*")[^>]*([^>]*)>`, 
+                    'gi'
+                );
+                
+                // Also look for basic pattern matches
+                const basicRegex = new RegExp(`<[^>]*${pattern}[^>]*([^>]*)>`, 'i');
+                
+                let match = pageSource.match(scrollableRegex) || pageSource.match(basicRegex);
+                if (match && priority < bestPriority) {
+                    const elementMatch = match[0];
+                    
+                    // Extract bounds if available
+                    const boundsMatch = elementMatch.match(/bounds="([^"]+)"/);
+                    const rectMatch = elementMatch.match(/x="(\d+)"[^>]*y="(\d+)"[^>]*width="(\d+)"[^>]*height="(\d+)"/);
+                    
+                    let bounds = null;
+                    if (boundsMatch) {
+                        bounds = boundsMatch[1];
+                    } else if (rectMatch) {
+                        // Convert x,y,width,height to bounds format
+                        const x = parseInt(rectMatch[1]);
+                        const y = parseInt(rectMatch[2]);
+                        const width = parseInt(rectMatch[3]);
+                        const height = parseInt(rectMatch[4]);
+                        bounds = `[${x},${y}][${x + width},${y + height}]`;
+                    }
+                    
+                    // Extract element ID or accessibility info for iOS mobile commands
+                    const idMatch = elementMatch.match(/(?:id|name|accessibility-id)="([^"]+)"/);
+                    const elementId = idMatch ? idMatch[1] : null;
+                    
+                    bestMatch = {
+                        type: pattern,
+                        bounds: bounds,
+                        element: elementMatch,
+                        elementId: elementId,
+                        priority: priority,
+                        isScrollable: scrollableRegex.test(elementMatch)
+                    };
+                    bestPriority = priority;
+                }
+            }
+
+            if (bestMatch) {
+                console.log(`📜 Found scrollable container: ${bestMatch.type} (priority: ${bestMatch.priority}, scrollable: ${bestMatch.isScrollable})`);
+                return bestMatch;
+            }
+
+            // Fallback: look for any element with scrollable="true"
+            const fallbackRegex = /<[^>]*scrollable="true"[^>]*([^>]*)>/i;
+            const fallbackMatch = pageSource.match(fallbackRegex);
+            if (fallbackMatch) {
+                console.log(`📜 Found fallback scrollable element`);
+                const boundsMatch = fallbackMatch[0].match(/bounds="([^"]+)"/);
+                return {
+                    type: 'generic_scrollable',
+                    bounds: boundsMatch ? boundsMatch[1] : null,
+                    element: fallbackMatch[0],
+                    elementId: null,
+                    priority: 999,
+                    isScrollable: true
+                };
+            }
+
+        } catch (error) {
+            console.warn('Could not detect scrollable container:', error.message);
+        }
+        return null;
+    }
+
+    async performOptimizedScroll(direction, scrollDistance, windowSize, scrollableArea) {
+        const centerX = Math.floor(windowSize.width / 2);
+        const centerY = Math.floor(windowSize.height / 2);
+        
+        // Use scrollable area bounds if available, otherwise use window center
+        let baseX = centerX;
+        let baseY = centerY;
+        let containerBounds = null;
+        
+        if (scrollableArea && scrollableArea.bounds) {
+            try {
+                // Parse bounds format like "[x,y][x2,y2]"
+                const boundsMatch = scrollableArea.bounds.match(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
+                if (boundsMatch) {
+                    const x1 = parseInt(boundsMatch[1]);
+                    const y1 = parseInt(boundsMatch[2]);
+                    const x2 = parseInt(boundsMatch[3]);
+                    const y2 = parseInt(boundsMatch[4]);
+                    baseX = Math.floor((x1 + x2) / 2);
+                    baseY = Math.floor((y1 + y2) / 2);
+                    containerBounds = { x1, y1, x2, y2, width: x2 - x1, height: y2 - y1 };
+                    console.log(`📍 Using scrollable area center: (${baseX}, ${baseY}), bounds: ${containerBounds.width}x${containerBounds.height}`);
+                }
+            } catch (error) {
+                console.warn('Could not parse scrollable area bounds, using window center');
+            }
+        }
+
+        let startX = baseX, startY = baseY, endX = baseX, endY = baseY;
+
+        // Calculate optimized scroll coordinates with larger distances
+        const scrollFactor = 0.6; // Scroll 60% of screen/container
+        const effectiveWidth = containerBounds ? containerBounds.width : windowSize.width;
+        const effectiveHeight = containerBounds ? containerBounds.height : windowSize.height;
+        const maxDistance = Math.max(scrollDistance, Math.min(effectiveWidth, effectiveHeight) * scrollFactor);
+
+        // Add safe margins to prevent scroll coordinates from going outside bounds
+        const safeMarginX = Math.floor(effectiveWidth * 0.05); // 5% margin
+        const safeMarginY = Math.floor(effectiveHeight * 0.05); // 5% margin
+
+        switch (direction.toLowerCase()) {
+            case 'down':
+                // Swipe UP to scroll DOWN (show content below) - finger moves from bottom to top
+                startY = Math.min(baseY + Math.floor(maxDistance / 3), (containerBounds ? containerBounds.y2 : windowSize.height) - safeMarginY);
+                endY = Math.max(baseY - Math.floor(maxDistance / 2), (containerBounds ? containerBounds.y1 : 0) + safeMarginY);
+                break;
+            case 'up':
+                // Swipe DOWN to scroll UP (show content above) - finger moves from top to bottom
+                startY = Math.max(baseY - Math.floor(maxDistance / 3), (containerBounds ? containerBounds.y1 : 0) + safeMarginY);
+                endY = Math.min(baseY + Math.floor(maxDistance / 2), (containerBounds ? containerBounds.y2 : windowSize.height) - safeMarginY);
+                break;
+            case 'left':
+                startX = Math.min(baseX + Math.floor(maxDistance / 3), (containerBounds ? containerBounds.x2 : windowSize.width) - safeMarginX);
+                endX = Math.max(baseX - Math.floor(maxDistance / 2), (containerBounds ? containerBounds.x1 : 0) + safeMarginX);
+                break;
+            case 'right':
+                startX = Math.max(baseX - Math.floor(maxDistance / 3), (containerBounds ? containerBounds.x1 : 0) + safeMarginX);
+                endX = Math.min(baseX + Math.floor(maxDistance / 2), (containerBounds ? containerBounds.x2 : windowSize.width) - safeMarginX);
+                break;
+        }
+
+        console.log(`👆 Scrolling ${direction} from (${startX}, ${startY}) to (${endX}, ${endY}) [distance: ${Math.floor(Math.sqrt(Math.pow(endX - startX, 2) + Math.pow(endY - startY, 2)))}px]`);
+
+        try {
+            // Perform platform-specific scroll
+            if (this.currentPlatform === 'iOS') {
+                // Use iOS-specific mobile commands for better reliability
+                try {
+                    if (scrollableArea && scrollableArea.element) {
+                        // Try element-specific scroll first
+                        await this.driver.execute('mobile: scroll', {
+                            direction: direction,
+                            element: scrollableArea.element,
+                            distance: Math.floor(maxDistance * 0.8) // Slightly smaller distance for element scroll
+                        });
+                    } else {
+                        // Fallback to swipe gesture for iOS
+                        await this.driver.execute('mobile: swipe', {
+                            startX: startX,
+                            startY: startY,
+                            endX: endX,
+                            endY: endY,
+                            duration: 0.8 // 800ms duration
+                        });
+                    }
+                } catch (iosScrollError) {
+                    console.warn(`iOS scroll command failed, using touch actions: ${iosScrollError.message}`);
+                    // Fallback to touch actions for iOS
+                    await this.driver.performActions([{
+                        type: 'pointer',
+                        id: 'finger1',
+                        parameters: { pointerType: 'touch' },
+                        actions: [
+                            { type: 'pointerMove', duration: 0, x: startX, y: startY },
+                            { type: 'pointerDown', button: 0 },
+                            { type: 'pause', duration: 100 },
+                            { type: 'pointerMove', duration: 800, x: endX, y: endY },
+                            { type: 'pointerUp', button: 0 }
+                        ]
+                    }]);
+                    await this.driver.releaseActions();
+                }
+            } else {
+                // Use touch actions for Android
                 await this.driver.performActions([{
                     type: 'pointer',
                     id: 'finger1',
@@ -2010,22 +2365,28 @@ class AppiumMCPServer extends BaseMCPServer {
                     actions: [
                         { type: 'pointerMove', duration: 0, x: startX, y: startY },
                         { type: 'pointerDown', button: 0 },
-                        { type: 'pointerMove', duration: 1000, x: endX, y: endY },
+                        { type: 'pause', duration: 100 },
+                        { type: 'pointerMove', duration: 800, x: endX, y: endY },
                         { type: 'pointerUp', button: 0 }
                     ]
                 }]);
 
                 await this.driver.releaseActions();
-                scrollCount++;
-
-                // Wait briefly between scrolls
-                await new Promise(resolve => setTimeout(resolve, 500));
             }
-
-            return this.createErrorResponse('scroll_to_element', 
-                new Error(`Element not found after ${maxScrolls} scroll attempts`));
-        } catch (error) {
-            return this.createErrorResponse('scroll_to_element', error);
+        } catch (scrollError) {
+            console.error(`Scroll gesture failed: ${scrollError.message}`);
+            // Final fallback - use basic swipe
+            try {
+                await this.driver.performTouchAction([
+                    { action: 'press', x: startX, y: startY },
+                    { action: 'wait', ms: 100 },
+                    { action: 'moveTo', x: endX, y: endY },
+                    { action: 'release' }
+                ]);
+            } catch (fallbackError) {
+                console.error(`Fallback scroll also failed: ${fallbackError.message}`);
+                throw new Error(`All scroll methods failed: ${scrollError.message}`);
+            }
         }
     }
 
@@ -2240,158 +2601,6 @@ class AppiumMCPServer extends BaseMCPServer {
         }
     }
 
-    async handlePopup(args) {
-        try {
-            await this.ensureConnection();
-
-            const { 
-                action = 'detect', 
-                timeout = 5000, 
-                actionButton = 'OK',
-                popupSelector
-            } = args;
-
-            console.log(`Handling popup with action: ${action}`);
-
-            switch (action) {
-                case 'detect':
-                    // Look for common popup indicators
-                    const popupSelectors = popupSelector ? [popupSelector] : [
-                        '//*[contains(@class, "alert")]',
-                        '//*[contains(@class, "dialog")]',
-                        '//*[contains(@class, "popup")]',
-                        '//*[contains(@class, "modal")]',
-                        '//android.widget.Button',
-                        '//XCUIElementTypeAlert',
-                        '//XCUIElementTypeButton'
-                    ];
-
-                    for (const selector of popupSelectors) {
-                        try {
-                            const element = await this.driver.$(selector);
-                            const exists = await element.isExisting();
-                            const displayed = exists ? await element.isDisplayed() : false;
-
-                            if (exists && displayed) {
-                                const text = await element.getText().catch(() => '');
-                                return this.createSuccessResponse(
-                                    'Popup detected',
-                                    {
-                                        detected: true,
-                                        selector,
-                                        text,
-                                        element: {
-                                            exists,
-                                            displayed
-                                        }
-                                    }
-                                );
-                            }
-                        } catch (error) {
-                            // Continue checking other selectors
-                        }
-                    }
-
-                    return this.createSuccessResponse(
-                        'No popup detected',
-                        { detected: false }
-                    );
-
-                case 'dismiss':
-                case 'accept':
-                    // Try to find and click the appropriate button
-                    const buttonSelectors = [
-                        `//*[contains(@text, "${actionButton}")]`,
-                        `//*[@text="${actionButton}"]`,
-                        `//android.widget.Button[contains(@text, "${actionButton}")]`,
-                        `//XCUIElementTypeButton[@name="${actionButton}"]`,
-                        `//XCUIElementTypeButton[contains(@name, "${actionButton}")]`
-                    ];
-
-                    for (const selector of buttonSelectors) {
-                        try {
-                            const button = await this.driver.$(selector);
-                            const exists = await button.isExisting();
-                            const clickable = exists ? await button.isClickable() : false;
-
-                            if (exists && clickable) {
-                                await button.click();
-                                
-                                // Wait briefly and verify popup is gone
-                                await new Promise(resolve => setTimeout(resolve, 1000));
-                                
-                                const stillExists = await button.isExisting();
-                                const stillDisplayed = stillExists ? await button.isDisplayed() : false;
-
-                                return this.createSuccessResponse(
-                                    `Popup ${action}ed successfully`,
-                                    {
-                                        action,
-                                        actionButton,
-                                        clicked: true,
-                                        popupGone: !stillDisplayed,
-                                        selector
-                                    }
-                                );
-                            }
-                        } catch (error) {
-                            // Continue trying other selectors
-                        }
-                    }
-
-                    return this.createErrorResponse('handle_popup', 
-                        new Error(`Could not find or click ${actionButton} button`));
-
-                case 'wait_and_dismiss':
-                    // Wait for popup to appear, then dismiss it
-                    const startTime = Date.now();
-                    let popupFound = false;
-
-                    while (Date.now() - startTime < timeout && !popupFound) {
-                        const detectResult = await this.handlePopup({ action: 'detect', popupSelector });
-                        
-                        if (detectResult.content && detectResult.content.detected) {
-                            popupFound = true;
-                            
-                            // Now dismiss it
-                            const dismissResult = await this.handlePopup({ 
-                                action: 'dismiss', 
-                                actionButton,
-                                popupSelector 
-                            });
-                            
-                            return this.createSuccessResponse(
-                                'Popup detected and dismissed',
-                                {
-                                    waitTime: Date.now() - startTime,
-                                    detected: true,
-                                    dismissed: dismissResult.isError ? false : true,
-                                    dismissResult
-                                }
-                            );
-                        }
-
-                        await new Promise(resolve => setTimeout(resolve, 500));
-                    }
-
-                    return this.createSuccessResponse(
-                        'No popup appeared within timeout',
-                        {
-                            waitTime: Date.now() - startTime,
-                            detected: false,
-                            timeout
-                        }
-                    );
-
-                default:
-                    return this.createErrorResponse('handle_popup', 
-                        new Error(`Unknown popup action: ${action}`));
-            }
-        } catch (error) {
-            return this.createErrorResponse('handle_popup', error);
-        }
-    }
-
     async handleCaptureState(args) {
         try {
             await this.ensureConnection();
@@ -2586,11 +2795,20 @@ class AppiumMCPServer extends BaseMCPServer {
                 className: this.extractAttribute(attributes, 'class'),
                 bounds: this.extractAttribute(attributes, 'bounds'),
                 clickable: this.extractAttribute(attributes, 'clickable') === 'true',
-                enabled: this.extractAttribute(attributes, 'enabled') === 'true'
+                enabled: this.extractAttribute(attributes, 'enabled') === 'true',
+                // Extract accessibility ID attributes (iOS: name, label; Android: content-desc can also be accessibility ID)
+                name: this.extractAttribute(attributes, 'name'),
+                label: this.extractAttribute(attributes, 'label'),
+                accessibilityId: this.extractAttribute(attributes, 'accessibility-id') || 
+                                this.extractAttribute(attributes, 'name') || 
+                                this.extractAttribute(attributes, 'label')
             };
 
-            // Determine best strategy for finding this element
-            if (element.resourceId) {
+            // Determine best strategy for finding this element - PRIORITIZE accessibilityId first
+            if (element.accessibilityId) {
+                element.strategy = 'accessibilityId';
+                element.selector = element.accessibilityId;
+            } else if (element.resourceId) {
                 element.strategy = 'id';
                 element.selector = element.resourceId;
             } else if (element.contentDesc) {
@@ -2773,34 +2991,173 @@ class AppiumMCPServer extends BaseMCPServer {
             this.validateRequiredParams(args, ['strategy', 'selector']);
             await this.ensureConnection();
 
-            const { strategy, selector, fallbackOptions = {}, timeout = 10000 } = args;
+            const { 
+                strategy, 
+                selector, 
+                fallbackOptions = {}, 
+                timeout = 10000,
+                enableScrolling = true,
+                scrollDirection = 'up',
+                maxScrollAttempts = 8
+            } = args;
 
             return await this.performActionWithStateCapture('smart_find_and_click', async () => {
-                // First, try traditional element finding
+                console.log(`🎯 Smart Find & Click: ${selector} (${strategy})`);
+
+                // Phase 1: Primary strategy attempt
+                let elementFound = false;
+                let elementFoundButClickFailed = false;
                 try {
                     const element = await this.findElementByStrategy(strategy, selector, timeout);
+                    elementFound = true;
+                    console.log(`✅ Element found with primary strategy: ${selector}`);
+                    
+                    // Check if element is displayed before clicking
+                    const isDisplayed = await element.isDisplayed();
+                    if (!isDisplayed) {
+                        throw new Error('Element found but not displayed');
+                    }
+                    
                     await element.click();
                     
                     return this.createSuccessResponse(`✅ Element clicked using primary strategy: ${strategy}`, {
                         method: 'primary_strategy',
                         strategy,
                         selector,
-                        success: true
+                        success: true,
+                        scrollUsed: false
                     });
                 } catch (primaryError) {
-                    console.log(`Primary strategy failed: ${primaryError.message}, trying fallback methods...`);
+                    console.log(`🔄 Primary strategy failed: ${primaryError.message}`);
                     
-                    // If primary strategy fails and screenshot analysis is enabled, try fallback
-                    if (fallbackOptions.enableScreenshotAnalysis !== false) {
-                        return await this.attemptCoordinateBasedClick(
-                            selector, 
-                            strategy, 
-                            fallbackOptions, 
-                            primaryError
-                        );
-                    } else {
-                        throw primaryError;
+                    // Distinguish between element not found vs click failure
+                    if (elementFound) {
+                        elementFoundButClickFailed = true;
+                        console.log(`⚠️ Element was found but click failed - will retry click without scrolling first`);
+                        
+                        // Try clicking again with a brief wait
+                        try {
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                            const retryElement = await this.findElementByStrategy(strategy, selector, 2000);
+                            await retryElement.click();
+                            
+                            return this.createSuccessResponse(`✅ Element clicked on retry: ${strategy}`, {
+                                method: 'retry_click',
+                                strategy,
+                                selector,
+                                success: true,
+                                scrollUsed: false,
+                                retryAttempt: true
+                            });
+                        } catch (retryError) {
+                            console.log(`🔄 Retry click also failed: ${retryError.message}`);
+                        }
                     }
+                    
+                    // Phase 2: Try scrolling to find element (only if element was not found or still failing)
+                    if (enableScrolling && !elementFoundButClickFailed) {
+                        console.log(`📜 Attempting to find element with scrolling...`);
+                        
+                        try {
+                            const scrollResult = await this.handleScrollToElement({
+                                strategy,
+                                selector,
+                                direction: scrollDirection,
+                                maxScrolls: maxScrollAttempts,
+                                scrollDistance: 400
+                            });
+                            
+                            if (scrollResult && !scrollResult.isError) {
+                                // Element found through scrolling, now try to click it
+                                try {
+                                    const element = await this.findElementByStrategy(strategy, selector, 2000);
+                                    await element.click();
+                                    
+                                    return this.createSuccessResponse(
+                                        `✅ Element clicked after scrolling (${scrollResult.content.scrollsPerformed} scrolls)`, 
+                                        {
+                                            method: 'scroll_and_click',
+                                            strategy,
+                                            selector,
+                                            success: true,
+                                            scrollUsed: true,
+                                            scrollsPerformed: scrollResult.content.scrollsPerformed,
+                                            scrollDirection
+                                        }
+                                    );
+                                } catch (clickError) {
+                                    console.log(`❌ Element found through scroll but click failed: ${clickError.message}`);
+                                }
+                            } else {
+                                console.log(`❌ Scrolling failed to find element: ${scrollResult?.message || 'Unknown error'}`);
+                            }
+                        } catch (scrollError) {
+                            console.log(`❌ Scroll attempt failed: ${scrollError.message}`);
+                        }
+                    }
+                    
+                    // Phase 3: Try alternative scroll direction (only if element was not found initially)
+                    if (enableScrolling && scrollDirection === 'up' && !elementFoundButClickFailed) {
+                        console.log(`🔄 Trying reverse scroll direction (down) with full scroll attempts...`);
+                        try {
+                            const reverseScrollResult = await this.handleScrollToElement({
+                                strategy,
+                                selector,
+                                direction: 'down',
+                                maxScrolls: maxScrollAttempts, // Use full scroll attempts, not limited
+                                scrollDistance: 400
+                            });
+                            
+                            if (reverseScrollResult && !reverseScrollResult.isError) {
+                                try {
+                                    const element = await this.findElementByStrategy(strategy, selector, 2000);
+                                    await element.click();
+                                    
+                                    return this.createSuccessResponse(
+                                        `✅ Element clicked after reverse scrolling (${reverseScrollResult.content.scrollsPerformed} scrolls down)`, 
+                                        {
+                                            method: 'reverse_scroll_and_click',
+                                            strategy,
+                                            selector,
+                                            success: true,
+                                            scrollUsed: true,
+                                            scrollsPerformed: reverseScrollResult.content.scrollsPerformed,
+                                            scrollDirection: 'down'
+                                        }
+                                    );
+                                } catch (clickError) {
+                                    console.log(`❌ Element found through reverse scroll but click failed: ${clickError.message}`);
+                                }
+                            }
+                        } catch (reverseScrollError) {
+                            console.log(`❌ Reverse scroll attempt failed: ${reverseScrollError.message}`);
+                        }
+                    }
+                    
+                    // Phase 4: Coordinate-based fallback (prioritized when element was found but click failed)
+                    if (fallbackOptions.enableScreenshotAnalysis !== false) {
+                        const priorityMessage = elementFoundButClickFailed ? 
+                            'Element found but click failed - trying coordinate-based click...' : 
+                            'Attempting coordinate-based fallback...';
+                        console.log(`🎯 ${priorityMessage}`);
+                        
+                        try {
+                            return await this.attemptCoordinateBasedClick(
+                                selector, 
+                                strategy, 
+                                { ...fallbackOptions, elementWasFound: elementFoundButClickFailed }, 
+                                primaryError
+                            );
+                        } catch (fallbackError) {
+                            console.log(`❌ Coordinate fallback failed: ${fallbackError.message}`);
+                        }
+                    }
+                    
+                    // Phase 5: Final failure with detailed context
+                    const failureContext = elementFoundButClickFailed ? 
+                        'Element was found but clicking consistently failed' : 
+                        'Element could not be found through any method';
+                    throw new Error(`❌ All methods failed to find and click element: ${selector}. Context: ${failureContext}. Primary error: ${primaryError.message}`);
                 }
             }, args);
         } catch (error) {
