@@ -648,30 +648,31 @@ class AppiumMCPServer extends BaseMCPServer {
 
         this.addTool({
             name: 'smart_find_and_click',
-            description: 'Intelligently find and click elements using multiple strategies including scrolling and AI-powered screenshot analysis',
+            description: 'Advanced element interaction tool that intelligently finds and clicks elements using a multi-layered fallback system. Combines traditional element selectors with smart scrolling, AI-powered screenshot analysis, and coordinate-based clicking. Automatically handles overlays, popups, and dynamic content. Ideal for complex mobile automation scenarios where simple element finding may fail due to UI changes, loading states, or accessibility issues.',
             inputSchema: {
                 type: 'object',
                 properties: {
                     strategy: {
                         type: 'string',
                         enum: ['id', 'xpath', 'className', 'text', 'contentDescription', 'accessibilityId', 'iosClassChain', 'iosNsPredicate'],
-                        description: 'Primary element location strategy',
+                        description: 'Primary element location strategy - the tool will try this method first before falling back to alternatives',
                     },
                     selector: {
                         type: 'string',
-                        description: 'Primary element selector value',
+                        description: 'Primary element selector value - the exact value to search for using the specified strategy',
                     },
                     fallbackOptions: {
                         type: 'object',
+                        description: 'Advanced fallback options when primary strategy fails - enables AI analysis, relative positioning, and coordinate hints',
                         properties: {
                             enableScreenshotAnalysis: {
                                 type: 'boolean',
-                                description: 'Enable AI-powered screenshot analysis for coordinate-based clicking',
+                                description: 'Enable AI-powered screenshot analysis for coordinate-based clicking when element selectors fail',
                                 default: true
                             },
                             textToFind: {
                                 type: 'string',
-                                description: 'Text content to look for in screenshot analysis'
+                                description: 'Specific text content to look for in screenshot analysis - helps AI identify the correct element'
                             },
                             relativeToElement: {
                                 type: 'object',
@@ -700,23 +701,23 @@ class AppiumMCPServer extends BaseMCPServer {
                     },
                     timeout: {
                         type: 'number',
-                        description: 'Wait timeout in milliseconds (default: 10000)',
+                        description: 'Maximum wait time in milliseconds for element to appear before trying fallback strategies (default: 10000)',
                         default: 10000,
                     },
                     enableScrolling: {
                         type: 'boolean',
-                        description: 'Enable automatic scrolling when element is not found (default: true)',
-                        default: true,
+                        description: 'Enable intelligent scrolling to find elements not currently visible on screen - automatically detects scrollable containers (default: false)',
+                        default: false,
                     },
                     scrollDirection: {
                         type: 'string',
                         enum: ['up', 'down', 'left', 'right'],
-                        description: 'Primary scroll direction for element search (default: down)',
+                        description: 'Primary scroll direction for element search - tool will also try opposite direction if needed (default: down for mobile-optimized search)',
                         default: 'down',
                     },
                     maxScrollAttempts: {
                         type: 'number',
-                        description: 'Maximum scroll attempts before fallback (default: 8)',
+                        description: 'Maximum number of scroll attempts before switching to coordinate-based fallback - prevents infinite scrolling (default: 8)',
                         default: 8,
                     },
                 },
@@ -2997,7 +2998,7 @@ class AppiumMCPServer extends BaseMCPServer {
                 fallbackOptions = {}, 
                 timeout = 10000,
                 enableScrolling = true,
-                scrollDirection = 'up',
+                scrollDirection = 'down',
                 maxScrollAttempts = 8
             } = args;
 
@@ -3103,7 +3104,7 @@ class AppiumMCPServer extends BaseMCPServer {
                             const reverseScrollResult = await this.handleScrollToElement({
                                 strategy,
                                 selector,
-                                direction: 'down',
+                                direction: 'up',
                                 maxScrolls: maxScrollAttempts, // Use full scroll attempts, not limited
                                 scrollDistance: 400
                             });
@@ -3122,7 +3123,7 @@ class AppiumMCPServer extends BaseMCPServer {
                                             success: true,
                                             scrollUsed: true,
                                             scrollsPerformed: reverseScrollResult.content.scrollsPerformed,
-                                            scrollDirection: 'down'
+                                            scrollDirection: 'up'
                                         }
                                     );
                                 } catch (clickError) {

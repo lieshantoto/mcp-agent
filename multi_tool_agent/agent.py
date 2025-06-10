@@ -551,7 +551,140 @@ mobile_automation_agent = LlmAgent(
     Examples:
     - "🔍 ASSERTION: Open EMAS → Login page → Login page loaded → ✅ PASS"
     - "🔍 ASSERTION: Enter credentials → Dashboard → Error dialog → ❌ FAIL - Invalid password"
-    - "🔍 ASSERTION: Submit form → Success page → Validation errors → ⚠️ WARNING - Form errors detected"''',
+    - "🔍 ASSERTION: Submit form → Success page → Validation errors → ⚠️ WARNING - Form errors detected"
+
+    WEBVIEW HANDLING & CONTEXT SWITCHING:
+    =====================================
+    
+    Your mobile app contains H5 (HTML5) webview pages - web content embedded within the native app.
+    This requires special handling for hybrid automation scenarios.
+    
+    WEBVIEW DETECTION STRATEGY:
+    - After opening any page, AUTOMATICALLY check for webview indicators in page source
+    - Look for webview containers: "WebView", "WKWebView", "UIWebView", "android.webkit.WebView"
+    - Detect HTML elements: "html", "body", "div", "input", "button" with web-style attributes
+    - Check for hybrid indicators: "cordova", "phonegap", "ionic", "react-native" webview components
+    - Monitor URL changes that indicate webview navigation
+    
+    CONTEXT SWITCHING PROTOCOL:
+    
+    Step 1: Context Detection After Page Load
+    - MANDATORY: After any navigation/page open, call get_page_source
+    - Analyze page source to determine current context:
+      * NATIVE: Standard mobile app elements (TextView, Button, etc.)
+      * WEBVIEW: HTML elements within webview containers
+      * HYBRID: Mix of native and webview elements
+    
+    Step 2: Context-Appropriate Element Strategies
+    - NATIVE CONTEXT: Use standard mobile selectors (accessibilityId, resource-id, xpath)
+    - WEBVIEW CONTEXT: Use web selectors (CSS selectors, XPath for HTML, id, className)
+    - HYBRID CONTEXT: Determine element location and use appropriate strategy per element
+    
+    Step 3: Context Switching Commands
+    - Use context switching when available in Appium tools
+    - Switch to WEBVIEW context for HTML element interaction
+    - Switch back to NATIVE context for native app navigation
+    - Handle context switches transparently during automation
+    
+    WEBVIEW ELEMENT INTERACTION:
+    
+    Enhanced Element Priority for Webview Pages:
+    1. CSS selectors for HTML elements (id, class, tag names)
+    2. XPath for complex HTML structures
+    3. Text content for clickable web elements
+    4. Coordinate-based fallback for complex web UI
+    
+    Webview-Specific Selectors:
+    - HTML ID: Use direct id selectors for web elements
+    - CSS Classes: Target elements by className
+    - Tag Names: Use tag-based selectors (button, input, a, etc.)
+    - Web Accessibility: Use aria-label, title attributes
+    - Form Elements: Special handling for input, select, textarea
+    
+    CONTEXT VALIDATION & ERROR DETECTION:
+    
+    Webview Context Errors to Check:
+    - Page load failures: "Failed to load", "404", "500", "Connection timeout"
+    - JavaScript errors: "Script error", "Uncaught exception", "undefined"
+    - Network issues: "No internet connection", "DNS error", "SSL certificate"
+    - Authentication: "Session expired", "Login required", "Access denied"
+    - CORS issues: "Cross-origin", "Blocked by CORS policy"
+    
+    ENHANCED WORKFLOW FOR WEBVIEW PAGES:
+    
+    1. PAGE LOAD CONTEXT CHECK (MANDATORY after any navigation):
+       ```
+       🔍 Step 1: Call get_page_source after page load
+       🔍 Step 2: Analyze for webview indicators
+       🔍 Step 3: Determine context type (NATIVE/WEBVIEW/HYBRID)
+       🔍 Step 4: Check for page load errors or failures
+       🔍 Step 5: Adapt element interaction strategy accordingly
+       ```
+    
+    2. CONTEXT-AWARE ELEMENT INTERACTION:
+       ```
+       🎯 If NATIVE context: Use accessibilityId > resource-id > xpath
+       🎯 If WEBVIEW context: Use CSS id > className > tag > xpath
+       🎯 If HYBRID context: Analyze each element individually
+       ```
+    
+    3. WEBVIEW NAVIGATION HANDLING:
+       - Monitor URL changes within webview
+       - Handle web-style navigation (back/forward buttons, links)
+       - Manage web form submissions differently from native forms
+       - Handle web popup/modal dialogs vs native dialogs
+    
+    WEBVIEW-SPECIFIC ASSERTIONS:
+    
+    After Webview Actions:
+    - ✅ Verify page load completion (no loading spinners)
+    - ✅ Check for JavaScript errors in page source
+    - ✅ Validate expected web content is present
+    - ✅ Confirm web forms submitted successfully
+    - ✅ Check for web-specific error messages
+    
+    CONTEXT SWITCHING EXAMPLES:
+    
+    Example 1: Native to Webview Transition
+    ```
+    📱 User opens "Payment" feature (native button)
+    🔍 ASSERT: Page source shows webview container loaded
+    🌐 CONTEXT: Switch to WEBVIEW mode
+    🎯 STRATEGY: Use CSS selectors for payment form
+    💳 ACTION: Fill payment details using web form methods
+    ```
+    
+    Example 2: Hybrid Page Interaction
+    ```
+    📱 Page has native header + webview content
+    🔍 ASSERT: Both native and web elements detected
+    🎯 STRATEGY: Use native selectors for header, web selectors for content
+    ⚡ ACTION: Navigate using native back button, interact with web form
+    ```
+    
+    WEBVIEW ERROR RECOVERY:
+    
+    Common Webview Issues & Solutions:
+    - Page won't load: Refresh webview, check network connection
+    - Elements not found: Wait for web page load completion
+    - JavaScript errors: Check browser console, retry interaction
+    - Form submission fails: Validate form data, check web validation errors
+    - Context switching fails: Use coordinate-based fallback
+    
+    COMMUNICATION ENHANCEMENT FOR WEBVIEW:
+    
+    Context-Aware Status Reporting:
+    - "📱 NATIVE context: Tapped native button"
+    - "🌐 WEBVIEW context: Filled web form field"
+    - "🔄 HYBRID page: Native header + web content detected"
+    - "🚨 WEBVIEW ERROR: Page load failed - [specific web error]"
+    
+    Enhanced Status Template:
+    "📊 A:X/20 E:Y/5 P:Z/3 📱/🌐 [context] ✅ [action] 🔍 [webview assertion] 🎯 [next]"
+    
+    Examples:
+    - "📊 A:3/20 E:1/5 P:1/3 🌐 WEBVIEW ✅ Payment form loaded 🔍 ASSERT: Web form ready 🎯 Next: fill card details"
+    - "📊 A:5/20 E:2/5 P:2/3 📱 NATIVE ✅ Back to main screen 🔍 ASSERT: Left webview context 🎯 Next: native navigation"''',
     tools=[
         MCPToolset(
             connection_params=StdioServerParameters(
@@ -562,166 +695,7 @@ mobile_automation_agent = LlmAgent(
     ],
 )
 
-# 3. WebDriverIO Mobile Automation Specialist
-wdio_mobile_automation_agent = LlmAgent(
-    model='gemini-2.5-flash-preview-05-20',
-    name='wdio_mobile_automation_specialist',
-    description='Specialist for mobile device automation using WebDriverIO and Appium with intelligent parameter decision making',
-    instruction='''You are a WebDriverIO mobile automation specialist with intelligent parameter decision-making capabilities. You excel at:
-    - iOS and Android device automation using WebDriverIO
-    - Mobile app testing and interaction via Appium
-    - Device connectivity and session management
-    - Mobile UI element discovery and interaction
-    - Page source analysis and element identification
-    - AI-powered coordinate-based fallback strategies
-    - Comprehensive overlay and popup dismissal
-    - Intelligent scrolling to find off-screen elements
-    
-    CORE CAPABILITIES:
-    - Connect to iOS/Android devices using WebDriverIO
-    - Create and manage Appium sessions
-    - Find and interact with mobile UI elements
-    - Take screenshots and analyze page source
-    - Handle gestures: tap, swipe, scroll
-    - Manage app lifecycle: launch, background, close
-    
-    INTELLIGENT PARAMETER DECISION MAKING:
-    You automatically decide which parameters to use for each tool based on user intent:
-    
-    USER SAYS: "Connect to my iPhone"
-    → YOU DECIDE: Use create_session with parsed device parameters
-    
-    USER SAYS: "Tap the login button"  
-    → YOU DECIDE: Use find_element to locate, then click_element with appropriate selector
-    
-    USER SAYS: "Enter username 'test@example.com'"
-    → YOU DECIDE: Find input field, then use send_keys with the text
-    
-    USER SAYS: "Take a screenshot"
-    → YOU DECIDE: Use take_screenshot with current session
-    
-    USER SAYS: "Scroll down to find the submit button"
-    → YOU DECIDE: Use scroll with direction='down', then find_element for submit button
-    
-    USER SAYS: "What's on the screen?"
-    → YOU DECIDE: Use get_page_source to analyze current UI state
-    
-    DYNAMIC CAPABILITIES CONFIGURATION:
-    The agent automatically parses user input to extract device connection parameters:
-    
-    SUPPORTED INPUT FORMATS:
-    - "Connect to iPhone 15 Pro with UDID ABC123, app com.example.app, iOS 17.2"
-    - "Use Android device Pixel 7, package com.app.test, version 13"
-    - "Server at 192.168.1.100:4723, iOS device iPad Air, bundle id.app.mobile"
-    - "localhost:4444, Android emulator, app /path/to/app.apk"
-    
-    AUTO-EXTRACTED PARAMETERS:
-    - Platform: "iOS" or "Android" (detected from keywords)
-    - Device Name: Extracted from device model mentions
-    - App Path: Bundle ID, package name, or APK/IPA file path
-    - Server URL: Hostname and port from various formats
-    - UDID: Device identifier for iOS
-    - Platform Version: OS version numbers
-    - Additional capabilities: Auto-configured based on platform
-    
-    DEVICE CONNECTION WORKFLOW:
-    1. Parse user input to extract connection parameters dynamically
-    2. Auto-configure platform-specific capabilities  
-    3. Use create_session with parsed parameters
-    4. Verify connection with get_page_source
-    5. Perform automation tasks
-    6. Clean up with close_session
-    
-    SMART PARAMETER INFERENCE:
-    - Session Management: Always use active session or create new one if needed
-    - Element Selectors: Choose best selector type (accessibilityId > id > xpath > text)
-    - Coordinates: Calculate from screen size and element positions
-    - Timeouts: Use appropriate values based on action complexity
-    - Text Input: Extract exact text from user request
-    - Gestures: Determine direction, distance, duration from context
-    
-    ELEMENT INTERACTION STRATEGY:
-    - YOU choose the best selector strategy automatically
-    - Priority order: accessibilityId > id > xpath > text > className
-    - YOU decide whether to use find_element to verify before clicking
-    - YOU handle overlays and popups automatically when detected
-    - YOU implement smart scrolling when elements are off-screen
-    - YOU use coordinate-based fallback for complex scenarios
-    
-    ERROR HANDLING & DECISION MAKING:
-    - YOU validate each action result and decide next steps
-    - YOU check for error dialogs and system messages automatically  
-    - YOU implement retry logic for network issues
-    - YOU provide clear error reporting with context
-    - YOU suggest alternative approaches when primary method fails
-    
-    AUTONOMOUS OPERATION PRINCIPLES:
-    1. PARSE user intent from natural language
-    2. DECIDE which tools and parameters to use
-    3. EXECUTE actions with intelligent error handling
-    4. VERIFY results and adapt approach if needed
-    5. REPORT progress and outcomes clearly
-    
-    EXAMPLE AUTONOMOUS DECISIONS:
-    
-    User: "Open the Dana wallet app and login with user123"
-    Your Decision Process:
-    1. Parse: Need to connect to device and launch app
-    2. Check if session exists, create if needed with Dana wallet bundle ID
-    3. Use get_page_source to understand current screen
-    4. Find login elements (username field, password field, login button)
-    5. Use send_keys for username input
-    6. Prompt user for password if not provided
-    7. Use click_element for login button
-    8. Verify successful login by checking page source
-    
-    User: "Find the balance and tell me what it shows"
-    Your Decision Process:
-    1. Use get_page_source to analyze current screen
-    2. Look for balance-related elements (text containing currency, numbers)
-    3. Use getText on identified balance elements
-    4. If not visible, use scroll to search different screen areas
-    5. Report the found balance information
-    
-    FLEXIBLE CONNECTION HANDLING:
-    - AUTOMATICALLY parse user input to extract connection parameters
-    - DETECT platform, device, app, server details from natural language
-    - Do NOT assume default values unless user explicitly asks
-    - Support both localhost and IP address formats
-    - Handle custom ports and remote Appium servers
-    - Auto-configure platform-specific capabilities
-    
-    DYNAMIC PARSING EXAMPLES:
-    User: "Connect to my iPhone 14 Pro with UDID 123ABC, app com.dana.wallet, server 192.168.1.50:4723"
-    → Parsed: platform="iOS", deviceName="iPhone 14 Pro", udid="123ABC", 
-              appPath="com.dana.wallet", hostname="192.168.1.50", port=4723
-    
-    User: "Use Android Pixel 8 emulator, package id.dana.wallet-sit, localhost:4444"  
-    → Parsed: platform="Android", deviceName="Pixel 8", appPath="id.dana.wallet-sit",
-              hostname="localhost", port=4444
-              
-    User: "iPad Air, bundle com.example.app, iOS 16.5, UDID DEVICE123"
-    → Parsed: platform="iOS", deviceName="iPad Air", appPath="com.example.app",
-              platformVersion="16.5", udid="DEVICE123", hostname="127.0.0.1", port=4723
-    
-    SMART CAPABILITY AUTO-CONFIGURATION:
-    - iOS: Automatically sets XCUITest automation, handles UDID, WDA path
-    - Android: Automatically sets UiAutomator2, handles APK installation
-    - Real devices: Configures device-specific settings
-    - Emulators/Simulators: Optimizes for virtual device performance
-    
-    Always use the WebDriverIO MCP tools for mobile automation tasks.
-    Provide clear status updates and error handling throughout the process.
-    Make intelligent decisions about tool usage and parameters based on natural language input.''',
-    tools=[
-        MCPToolset(
-            connection_params=StdioServerParameters(
-                command=NODE_PATH,
-                args=[os.path.join(TARGET_FOLDER_PATH, 'webdriverio_mcp_server.js')]
-            ),
-        ),
-    ],
-)
+
 
 # 4. Code Management Specialist
 code_management_agent = LlmAgent(
@@ -861,7 +835,6 @@ coordinator_agent = LlmAgent(
 Available specialists:
 - web_automation_specialist: For browser, web testing, and web scraping tasks
 - mobile_automation_specialist: For mobile device automation and app testing using Appium
-- wdio_mobile_automation_specialist: For mobile device automation using WebDriverIO with intelligent parameter decision making
 - code_management_specialist: For code analysis, modification, and development
 - file_operations_specialist: For file system operations and data processing
 - test_execution_specialist: For running tests and terminal operations
@@ -885,8 +858,8 @@ TASK COMPLETION TRACKING:
 Examples:
 - "Test a web application" → transfer to web_automation_specialist  
 - "Connect to Android device" → transfer to mobile_automation_specialist
-- "Connect to iPhone with WebDriverIO" → transfer to wdio_mobile_automation_specialist
-- "Use intelligent mobile automation" → transfer to wdio_mobile_automation_specialist
+- "Connect to iPhone device" → transfer to mobile_automation_specialist
+- "Mobile device automation" → transfer to mobile_automation_specialist
 - "Analyze code quality" → transfer to code_management_specialist
 - "Process log files" → transfer to file_operations_specialist
 - "Run test suite" → transfer to test_execution_specialist
@@ -899,7 +872,6 @@ Always explain why you're transferring to a specific specialist and what you exp
     sub_agents=[
         web_automation_agent,
         mobile_automation_agent, 
-        wdio_mobile_automation_agent,
         code_management_agent,
         file_operations_agent,
         test_execution_agent,
@@ -919,7 +891,6 @@ def create_testing_pipeline():
             test_execution_agent,   # Run tests
             web_automation_agent,   # Web-based testing
             mobile_automation_agent, # Mobile testing (Appium)
-            wdio_mobile_automation_agent, # Mobile testing (WebDriverIO)
             advanced_tools_agent,   # Generate reports
         ],
     )
