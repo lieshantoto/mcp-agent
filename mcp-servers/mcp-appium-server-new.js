@@ -540,44 +540,65 @@ class AppiumMCPServer extends BaseMCPServer {
 
         this.addTool({
             name: 'verify_action_result',
-            description: 'Verify the result of a previous action by checking element states or text changes',
+            description: 'Advanced verification tool that intelligently checks the result of previous actions using multiple strategies. Can verify element visibility, text presence, enabled/disabled states with smart fallback mechanisms including scrolling and alternative selectors. Supports both new structured format and legacy parameters.',
             inputSchema: {
                 type: 'object',
                 properties: {
                     verification: {
                         type: 'object',
+                        description: 'Structured verification specification with smart fallback capabilities',
                         properties: {
                             type: {
                                 type: 'string',
                                 enum: ['element_visible', 'element_hidden', 'text_present', 'text_absent', 'element_enabled', 'element_disabled'],
-                                description: 'Type of verification to perform',
+                                description: 'Type of verification to perform - element_visible checks if element exists and is displayed, element_hidden checks if element is not visible, text_present/absent check for text in page source, element_enabled/disabled check interactive state',
+                            },
+                            strategy: {
+                                type: 'string',
+                                enum: ['id', 'xpath', 'className', 'text', 'contentDescription', 'accessibilityId', 'iosClassChain', 'iosNsPredicate'],
+                                description: 'Element location strategy (required for element verifications) - tool will try alternative strategies as fallback',
+                            },
+                            selector: {
+                                type: 'string',
+                                description: 'Element selector or text to verify - exact value to search for using the specified strategy',
+                            },
                         },
-                        strategy: {
-                            type: 'string',
-                            enum: ['id', 'xpath', 'className', 'text', 'contentDescription', 'accessibilityId', 'iosClassChain', 'iosNsPredicate'],
-                            description: 'Element location strategy (for element verifications)',
-                        },
-                        selector: {
-                            type: 'string',
-                            description: 'Element selector or text to verify',
-                        },
+                        required: ['type', 'selector'],
                     },
-                    required: ['type', 'selector'],
+                    timeout: {
+                        type: 'number',
+                        description: 'Maximum timeout for verification attempts in milliseconds',
+                        default: 5000,
+                    },
+                    waitAfterAction: {
+                        type: 'number',
+                        description: 'Time to wait before starting verification to allow UI updates',
+                        default: 1000,
+                    },
+                    enableScrolling: {
+                        type: 'boolean',
+                        description: 'Enable intelligent scrolling to find elements not currently visible on screen',
+                        default: false,
+                    },
+                    maxScrollAttempts: {
+                        type: 'number',
+                        description: 'Maximum number of scroll attempts when enableScrolling is true',
+                        default: 3,
+                    },
+                    // Legacy parameters for backward compatibility
+                    expectedText: {
+                        type: 'string',
+                        description: 'Legacy parameter: Text to verify is present in page source (use verification.type=text_present instead)',
+                    },
+                    expectedElement: {
+                        type: 'string',
+                        description: 'Legacy parameter: Element selector to verify is visible (use verification instead)',
+                    },
                 },
-                timeout: {
-                    type: 'number',
-                    description: 'Timeout for verification in milliseconds',
-                    default: 5000,
-                },
-                waitAfterAction: {
-                    type: 'number',
-                    description: 'Time to wait before verification in milliseconds',
-                    default: 1000,
-                },
+                // At least one of the main parameters must be provided
+                required: [],
             },
-            required: ['verification'],
-        },
-    });
+        });
 
         this.addTool({
             name: 'smart_wait',
@@ -2395,78 +2416,543 @@ class AppiumMCPServer extends BaseMCPServer {
         try {
             await this.ensureConnection();
 
-            const { expectedText, expectedElement, timeout = 5000 } = args;
+            const { 
+                verification, 
+                timeout = 5000, 
+                waitAfterAction = 1000,
+                enableScrolling = false,
+                maxScrollAttempts = 3
+            } = args;
 
-            console.log(`Verifying action result...`);
+            // Handle legacy format for backward compatibility
+            const { expectedText, expectedElement } = args;
+            
+            // Validate that at least one verification parameter is provided
+            if (!verification && !expectedText && !expectedElement) {
+                throw new Error('At least one verification parameter must be provided: verification, expectedText, or expectedElement');
+            }
+            
+            console.log(`🔍 Verifying action result...`);
 
             const startTime = Date.now();
 
-            // Wait a moment for UI to update
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            // Wait for UI to update after action
+            if (waitAfterAction > 0) {
+                await new Promise(resolve => setTimeout(resolve, waitAfterAction));
+            }
 
             const results = {
                 verified: false,
-                checks: []
+                checks: [],
+                methods: []
             };
 
-            // Check for expected text if provided
-            if (expectedText) {
-                try {
-                    const pageSource = await this.driver.getPageSource();
-                    const textFound = pageSource.toLowerCase().includes(expectedText.toLowerCase());
-                    
-                    results.checks.push({
-                        type: 'text',
-                        expected: expectedText,
-                        found: textFound
-                    });
-
-                    if (textFound) {
-                        results.verified = true;
-                    }
-                } catch (error) {
-                    results.checks.push({
-                        type: 'text',
-                        expected: expectedText,
-                        error: error.message
-                    });
+            // Handle new verification format
+            if (verification) {
+                const result = await this.performSmartVerification(verification, timeout, enableScrolling, maxScrollAttempts);
+                results.checks.push(result);
+                if (result.success) {
+                    results.verified = true;
                 }
             }
 
-            // Check for expected element if provided
-            if (expectedElement) {
-                try {
-                    const element = await this.driver.$(expectedElement);
-                    const elementExists = await element.isExisting();
-                    const elementDisplayed = elementExists ? await element.isDisplayed() : false;
-                    
-                    results.checks.push({
-                        type: 'element',
-                        selector: expectedElement,
-                        exists: elementExists,
-                        displayed: elementDisplayed
-                    });
+            // Handle legacy format for backward compatibility
+            if (expectedText) {
+                const textResult = await this.verifyTextPresence(expectedText, timeout);
+                results.checks.push(textResult);
+                if (textResult.success) {
+                    results.verified = true;
+                }
+            }
 
-                    if (elementExists && elementDisplayed) {
-                        results.verified = true;
-                    }
-                } catch (error) {
-                    results.checks.push({
-                        type: 'element',
-                        selector: expectedElement,
-                        error: error.message
-                    });
+            if (expectedElement) {
+                const elementResult = await this.verifyElementPresence(expectedElement, timeout, enableScrolling, maxScrollAttempts);
+                results.checks.push(elementResult);
+                if (elementResult.success) {
+                    results.verified = true;
                 }
             }
 
             results.verificationTime = Date.now() - startTime;
 
-            return this.createSuccessResponse(
-                results.verified ? 'Action result verified successfully' : 'Action result verification failed',
-                results
-            );
+            const message = results.verified ? 
+                '✅ Action result verified successfully' : 
+                '❌ Action result verification failed';
+
+            return this.createSuccessResponse(message, results);
         } catch (error) {
             return this.createErrorResponse('verify_action_result', error);
+        }
+    }
+
+    // Enhanced verification method with smart element finding
+    async performSmartVerification(verification, timeout, enableScrolling, maxScrollAttempts) {
+        const { type, strategy, selector } = verification;
+        const startTime = Date.now();
+        
+        console.log(`🔍 Smart verification: ${type} for ${strategy}:${selector}`);
+
+        const result = {
+            type: 'smart_verification',
+            verificationType: type,
+            strategy,
+            selector,
+            success: false,
+            methods: [],
+            details: {}
+        };
+
+        try {
+            switch (type) {
+                case 'element_visible':
+                    result.success = await this.smartVerifyElementVisible(strategy, selector, timeout, enableScrolling, maxScrollAttempts, result);
+                    break;
+                
+                case 'element_hidden':
+                    result.success = await this.smartVerifyElementHidden(strategy, selector, timeout, result);
+                    break;
+                
+                case 'text_present':
+                    result.success = await this.smartVerifyTextPresent(selector, timeout, enableScrolling, maxScrollAttempts, result);
+                    break;
+                
+                case 'text_absent':
+                    result.success = await this.smartVerifyTextAbsent(selector, timeout, result);
+                    break;
+                
+                case 'element_enabled':
+                    result.success = await this.smartVerifyElementEnabled(strategy, selector, timeout, enableScrolling, maxScrollAttempts, result);
+                    break;
+                
+                case 'element_disabled':
+                    result.success = await this.smartVerifyElementDisabled(strategy, selector, timeout, enableScrolling, maxScrollAttempts, result);
+                    break;
+                
+                default:
+                    throw new Error(`Unsupported verification type: ${type}`);
+            }
+
+            result.verificationTime = Date.now() - startTime;
+            
+        } catch (error) {
+            result.error = error.message;
+            result.methods.push({
+                method: 'error',
+                success: false,
+                error: error.message
+            });
+        }
+
+        return result;
+    }
+
+    // Smart element visibility verification with fallback strategies
+    async smartVerifyElementVisible(strategy, selector, timeout, enableScrolling, maxScrollAttempts, result) {
+        const methods = result.methods;
+
+        // Method 1: Direct element finding with current strategy
+        try {
+            const element = await this.findElementByStrategy(strategy, selector, Math.min(timeout, 3000));
+            const isDisplayed = await element.isDisplayed();
+            const isEnabled = await element.isEnabled();
+            
+            methods.push({
+                method: 'direct_find',
+                success: isDisplayed,
+                details: { found: true, displayed: isDisplayed, enabled: isEnabled }
+            });
+
+            if (isDisplayed) {
+                result.details = { found: true, displayed: true, enabled: isEnabled };
+                return true;
+            }
+        } catch (error) {
+            methods.push({
+                method: 'direct_find',
+                success: false,
+                error: error.message
+            });
+        }
+
+        // Method 2: Try alternative strategies (similar to smart_find_and_click)
+        if (strategy !== 'accessibilityId') {
+            try {
+                const pageSource = await this.driver.getPageSource();
+                const elements = await this.extractElementsFromPageSource(pageSource);
+                
+                // Find elements that might match our selector
+                const matchingElements = elements.filter(el => 
+                    this.elementMatchesSelector(el, strategy, selector)
+                );
+
+                if (matchingElements.length > 0) {
+                    // Try finding with alternative strategies
+                    for (const el of matchingElements.slice(0, 3)) { // Try up to 3 matches
+                        if (el.strategy && el.strategy !== strategy) {
+                            try {
+                                const altElement = await this.findElementByStrategy(el.strategy, el.selector, 2000);
+                                const isDisplayed = await altElement.isDisplayed();
+                                
+                                methods.push({
+                                    method: 'alternative_strategy',
+                                    strategy: el.strategy,
+                                    selector: el.selector,
+                                    success: isDisplayed,
+                                    details: { displayed: isDisplayed }
+                                });
+
+                                if (isDisplayed) {
+                                    result.details = { found: true, displayed: true, alternativeStrategy: el.strategy };
+                                    return true;
+                                }
+                            } catch (altError) {
+                                methods.push({
+                                    method: 'alternative_strategy',
+                                    strategy: el.strategy,
+                                    selector: el.selector,
+                                    success: false,
+                                    error: altError.message
+                                });
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                methods.push({
+                    method: 'alternative_strategy',
+                    success: false,
+                    error: error.message
+                });
+            }
+        }
+
+        // Method 3: Scrolling to find element (if enabled)
+        if (enableScrolling) {
+            try {
+                const scrollResult = await this.handleScrollToElement({
+                    strategy,
+                    selector,
+                    direction: 'down',
+                    maxScrolls: maxScrollAttempts,
+                    scrollDistance: 300
+                });
+
+                if (scrollResult && !scrollResult.isError) {
+                    methods.push({
+                        method: 'scroll_find',
+                        success: true,
+                        details: { scrollsPerformed: scrollResult.content.scrollsPerformed }
+                    });
+
+                    result.details = { found: true, displayed: true, foundViaScrolling: true };
+                    return true;
+                } else {
+                    methods.push({
+                        method: 'scroll_find',
+                        success: false,
+                        error: scrollResult?.message || 'Scroll failed'
+                    });
+                }
+            } catch (scrollError) {
+                methods.push({
+                    method: 'scroll_find',
+                    success: false,
+                    error: scrollError.message
+                });
+            }
+        }
+
+        // Method 4: Page source text search as final fallback
+        try {
+            const pageSource = await this.driver.getPageSource();
+            const selectorInSource = pageSource.includes(selector);
+            
+            methods.push({
+                method: 'page_source_search',
+                success: selectorInSource,
+                details: { foundInSource: selectorInSource }
+            });
+
+            if (selectorInSource) {
+                result.details = { foundInPageSource: true, actuallyVisible: false };
+                return false; // Present in source but not actually visible
+            }
+        } catch (error) {
+            methods.push({
+                method: 'page_source_search',
+                success: false,
+                error: error.message
+            });
+        }
+
+        result.details = { found: false, displayed: false };
+        return false;
+    }
+
+    // Smart element enabled/disabled verification
+    async smartVerifyElementEnabled(strategy, selector, timeout, enableScrolling, maxScrollAttempts, result) {
+        const methods = result.methods;
+
+        // Try to find element first (similar to visibility check)
+        try {
+            const element = await this.findElementByStrategy(strategy, selector, Math.min(timeout, 3000));
+            const isEnabled = await element.isEnabled();
+            const isDisplayed = await element.isDisplayed();
+            
+            methods.push({
+                method: 'direct_find',
+                success: isEnabled,
+                details: { found: true, enabled: isEnabled, displayed: isDisplayed }
+            });
+
+            result.details = { found: true, enabled: isEnabled, displayed: isDisplayed };
+            return isEnabled;
+        } catch (error) {
+            methods.push({
+                method: 'direct_find',
+                success: false,
+                error: error.message
+            });
+
+            // If scrolling enabled, try to find via scroll
+            if (enableScrolling) {
+                try {
+                    const scrollResult = await this.handleScrollToElement({
+                        strategy,
+                        selector,
+                        direction: 'down',
+                        maxScrolls: maxScrollAttempts
+                    });
+
+                    if (scrollResult && !scrollResult.isError) {
+                        const element = await this.findElementByStrategy(strategy, selector, 2000);
+                        const isEnabled = await element.isEnabled();
+                        
+                        methods.push({
+                            method: 'scroll_and_check',
+                            success: isEnabled,
+                            details: { enabled: isEnabled, foundViaScrolling: true }
+                        });
+
+                        result.details = { found: true, enabled: isEnabled, foundViaScrolling: true };
+                        return isEnabled;
+                    }
+                } catch (scrollError) {
+                    methods.push({
+                        method: 'scroll_and_check',
+                        success: false,
+                        error: scrollError.message
+                    });
+                }
+            }
+
+            result.details = { found: false, enabled: false };
+            return false;
+        }
+    }
+
+    // Smart element disabled verification
+    async smartVerifyElementDisabled(strategy, selector, timeout, enableScrolling, maxScrollAttempts, result) {
+        // Element is disabled if it exists but is not enabled
+        const enabledResult = await this.smartVerifyElementEnabled(strategy, selector, timeout, enableScrolling, maxScrollAttempts, result);
+        
+        // If element wasn't found, that's different from being disabled
+        if (!result.details.found) {
+            result.details.disabled = false;
+            result.details.reason = 'element_not_found';
+            return false;
+        }
+
+        const isDisabled = !enabledResult;
+        result.details.disabled = isDisabled;
+        return isDisabled;
+    }
+
+    // Smart element hidden verification
+    async smartVerifyElementHidden(strategy, selector, timeout, result) {
+        const methods = result.methods;
+
+        try {
+            const element = await this.findElementByStrategy(strategy, selector, Math.min(timeout, 3000));
+            const isDisplayed = await element.isDisplayed();
+            
+            methods.push({
+                method: 'direct_find',
+                success: !isDisplayed, // Success means element is hidden
+                details: { found: true, displayed: isDisplayed, hidden: !isDisplayed }
+            });
+
+            result.details = { found: true, displayed: isDisplayed, hidden: !isDisplayed };
+            return !isDisplayed; // Return true if element is hidden
+        } catch (error) {
+            // If element not found at all, it's effectively hidden
+            methods.push({
+                method: 'direct_find',
+                success: true, // Not found = hidden
+                details: { found: false, hidden: true, reason: 'not_found' }
+            });
+
+            result.details = { found: false, hidden: true, reason: 'element_not_found' };
+            return true;
+        }
+    }
+
+    // Smart text presence verification with scrolling
+    async smartVerifyTextPresent(text, timeout, enableScrolling, maxScrollAttempts, result) {
+        const methods = result.methods;
+
+        // Method 1: Direct page source search
+        try {
+            const pageSource = await this.driver.getPageSource();
+            const textFound = pageSource.toLowerCase().includes(text.toLowerCase());
+            
+            methods.push({
+                method: 'page_source_search',
+                success: textFound,
+                details: { textFound }
+            });
+
+            if (textFound) {
+                result.details = { found: true, method: 'direct_search' };
+                return true;
+            }
+        } catch (error) {
+            methods.push({
+                method: 'page_source_search',
+                success: false,
+                error: error.message
+            });
+        }
+
+        // Method 2: Try scrolling to find text (if enabled)
+        if (enableScrolling) {
+            try {
+                // Try scrolling down to find text
+                for (let i = 0; i < maxScrollAttempts; i++) {
+                    await this.performOptimizedScroll('down', 300);
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    
+                    const pageSource = await this.driver.getPageSource();
+                    const textFound = pageSource.toLowerCase().includes(text.toLowerCase());
+                    
+                    if (textFound) {
+                        methods.push({
+                            method: 'scroll_search',
+                            success: true,
+                            details: { textFound: true, scrollsPerformed: i + 1 }
+                        });
+
+                        result.details = { found: true, foundViaScrolling: true, scrollsPerformed: i + 1 };
+                        return true;
+                    }
+                }
+
+                methods.push({
+                    method: 'scroll_search',
+                    success: false,
+                    details: { textFound: false, scrollsPerformed: maxScrollAttempts }
+                });
+            } catch (scrollError) {
+                methods.push({
+                    method: 'scroll_search',
+                    success: false,
+                    error: scrollError.message
+                });
+            }
+        }
+
+        result.details = { found: false };
+        return false;
+    }
+
+    // Smart text absence verification
+    async smartVerifyTextAbsent(text, timeout, result) {
+        const methods = result.methods;
+
+        try {
+            const pageSource = await this.driver.getPageSource();
+            const textFound = pageSource.toLowerCase().includes(text.toLowerCase());
+            
+            methods.push({
+                method: 'page_source_search',
+                success: !textFound, // Success means text is absent
+                details: { textFound, absent: !textFound }
+            });
+
+            result.details = { found: textFound, absent: !textFound };
+            return !textFound;
+        } catch (error) {
+            methods.push({
+                method: 'page_source_search',
+                success: false,
+                error: error.message
+            });
+
+            result.details = { error: error.message };
+            return false;
+        }
+    }
+
+    // Helper function to check if element matches selector
+    elementMatchesSelector(element, strategy, selector) {
+        switch (strategy) {
+            case 'id':
+                return element.resourceId && element.resourceId.includes(selector);
+            case 'text':
+                return element.text && element.text.includes(selector);
+            case 'contentDescription':
+                return element.contentDesc && element.contentDesc.includes(selector);
+            case 'accessibilityId':
+                return element.accessibilityId && element.accessibilityId.includes(selector);
+            case 'className':
+                return element.className && element.className.includes(selector);
+            default:
+                return false;
+        }
+    }
+
+    // Legacy text verification method for backward compatibility
+    async verifyTextPresence(expectedText, timeout) {
+        try {
+            const pageSource = await this.driver.getPageSource();
+            const textFound = pageSource.toLowerCase().includes(expectedText.toLowerCase());
+            
+            return {
+                type: 'text',
+                expected: expectedText,
+                success: textFound,
+                method: 'legacy'
+            };
+        } catch (error) {
+            return {
+                type: 'text',
+                expected: expectedText,
+                success: false,
+                error: error.message,
+                method: 'legacy'
+            };
+        }
+    }
+
+    // Legacy element verification method for backward compatibility
+    async verifyElementPresence(expectedElement, timeout, enableScrolling, maxScrollAttempts) {
+        try {
+            // Use smart verification for better results
+            const verification = {
+                type: 'element_visible',
+                strategy: 'xpath', // Default to xpath for legacy selectors
+                selector: expectedElement
+            };
+
+            return await this.performSmartVerification(verification, timeout, enableScrolling, maxScrollAttempts);
+        } catch (error) {
+            return {
+                type: 'element',
+                selector: expectedElement,
+                success: false,
+                error: error.message,
+                method: 'legacy'
+            };
         }
     }
 
