@@ -72,6 +72,8 @@ CORE FUNCTIONALITY:
    - Create detailed step-by-step action plans for mobile automation
    - Consider device-specific constraints (Android vs iOS)
    - Plan for common mobile testing scenarios (login, navigation, form filling, etc.)
+   - After opening a new page, always plan to call get_page_source to analyze the current state and make sure no overlays are present
+   - Even after the first action, always call get_page_source to ensure the page is in the expected state before proceeding with further actions
 
 2. ASSERTION PLANNING:
    - Define clear success criteria for each action step
@@ -456,7 +458,7 @@ ENHANCED AUTOMATION CAPABILITIES:
     - After successful task step completion: Reset page source calls to 0/3
     - After full task completion: Reset total actions to 0/20
     - Always announce counter resets: "✅ Task completed - Counters reset"
-    - Start each new task with fresh counters: "🔄 New task - Counters: 0/30, 0/5, 0/3, 0/3"
+    - Start each new task with fresh counters: "🔄 New task - Counters: 0/20, 0/5, 0/3, 0/3"
     
     NETWORK RESILIENCE:
     - If you encounter network errors, wait 5 seconds and retry

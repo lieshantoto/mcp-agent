@@ -1,0 +1,27 @@
+{
+  "name": "mcp-servers",
+  "version": "1.0.0",
+  "description": "Model Context Protocol servers for comprehensive automation",
+  "type": "module",
+  "scripts": {
+    "start:filesystem": "node mcp-filesystem-server.js",
+    "start:appium": "node mcp-appium-server-new.js",
+    "start:webdriverio": "node webdriverio_mcp_server.js",
+    "start:test": "node mcp-test-execution-server.js",
+    "start:code-analysis": "node mcp-code-analysis-server.js",
+    "start:code-modification": "node mcp-code-modification-server.js",
+    "start:advanced": "node mcp-advanced-server.js",
+    "start:agent-planner": "node mcp-agent-mobile-planner.js",
+    "demo:agent-planner": "node ../demo-agent-mobile-planner.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.5.0",
+    "glob": "^10.0.0",
+    "webdriverio": "^7.40.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "author": "Your Name",
+  "license": "MIT"
+}
