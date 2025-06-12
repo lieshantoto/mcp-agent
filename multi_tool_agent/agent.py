@@ -172,6 +172,8 @@ STEP EXECUTION CAPABILITIES:
     - AI-powered coordinate-based fallback when element finding fails
     - Comprehensive overlay and popup dismissal
     - Intelligent scrolling to find elements
+    - AUTOMATIC STEP SCREENSHOTS: Every action automatically captures before/after screenshots for UI validation
+    - STEP-BY-STEP VISUAL VALIDATION: Each action includes screenshot evidence for user review and assertion
 
 ASSERTION AND VALIDATION:
     - Execute assertions after each step completion
@@ -179,6 +181,8 @@ ASSERTION AND VALIDATION:
     - Implement real-time error detection and reporting
     - Perform comprehensive state verification
     - Track assertion results throughout test execution
+    - VISUAL EVIDENCE COLLECTION: Automatic screenshot capture for every step with assertion guidance
+    - UI STATE VERIFICATION: Compare before/after screenshots to validate action outcomes
 
 REPORT GENERATION:
     - Generate detailed step-by-step execution reports
@@ -240,11 +244,20 @@ Step 3: Mobile Automation Specialist Executes:
 STEP EXECUTION PATTERN:
 For each planned step:
 - Verify pre-conditions are met
-- Execute the planned action
-- Immediately assert expected outcome
-- Capture evidence (screenshots, page source)
-- Log detailed results
+- Execute the planned action (AUTOMATIC screenshot capture before/after)
+- Immediately assert expected outcome using visual evidence
+- Capture evidence (screenshots automatically saved, page source included)
+- VISUAL VALIDATION: Review screenshot against expected UI state
+- Log detailed results with screenshot references
+- Use capture_step_screenshot for additional step-specific documentation
 - Proceed to next step or handle failures
+
+ENHANCED STEP DOCUMENTATION:
+- Every action automatically captures before/after screenshots
+- Use capture_step_screenshot for important workflow milestones
+- Include step number, description, and expected outcomes
+- Generate assertion recommendations based on UI analysis
+- Provide visual evidence for user validation and reporting
 
 ASSERTION EXECUTION:
 - Run assertions immediately after each action
@@ -557,12 +570,20 @@ ENHANCED AUTOMATION CAPABILITIES:
         - "📊 A:8/20 E:2/5 P:2/3 S:2/3 ✅ Tutorial skipped ⬇️ Found after scroll ✅ Button tapped 🎯 Next: verify"
 
     AVAILABLE SMART TOOLS:
-    - smart_find_and_click: Primary tool with built-in fallback (USE THIS FIRST)
-    - scroll_to_element: Intelligent scrolling to find elements (USE WHEN ELEMENT NOT FOUND)
+    - smart_find_and_click: Primary tool with built-in fallback (USE THIS FIRST) - AUTOMATIC screenshot capture
+    - scroll_to_element: Intelligent scrolling to find elements (USE WHEN ELEMENT NOT FOUND) - AUTOMATIC screenshot capture
     - analyze_screenshot: Analyze screen to find elements and suggest coordinates
-    - tap_coordinates: Direct coordinate-based interaction (absolute/relative/element-relative)
+    - tap_coordinates: Direct coordinate-based interaction (absolute/relative/element-relative) - AUTOMATIC screenshot capture
     - get_page_source: Get current page source XML efficiently for popup detection and element analysis
-    - swipe: Manual gesture when scroll_to_element is not available
+    - swipe: Manual gesture when scroll_to_element is not available - AUTOMATIC screenshot capture
+    - capture_step_screenshot: Dedicated tool for step-by-step workflow documentation and validation
+    - verify_action_result: Enhanced verification with smart element finding and screenshot analysis
+    
+    SCREENSHOT AUTOMATION FEATURES:
+    - AUTOMATIC CAPTURE: Every action tool automatically captures before/after screenshots
+    - STEP DOCUMENTATION: Use capture_step_screenshot for milestone documentation
+    - VISUAL VALIDATION: Screenshots automatically analyzed for UI assertion guidance
+    - ASSERTION SUPPORT: Visual evidence provided for all verification steps
     
     MANDATORY RULES:
     - ALWAYS use user-provided hostname and port exactly as specified

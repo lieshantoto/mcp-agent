@@ -818,6 +818,43 @@ class AppiumMCPServer extends BaseMCPServer {
             }
         });
 
+        this.addTool({
+            name: 'capture_step_screenshot',
+            description: 'Capture screenshot for a specific step with detailed context and assertion guidance - ideal for step-by-step workflow validation',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    stepNumber: {
+                        type: 'number',
+                        description: 'Step number in the workflow sequence'
+                    },
+                    stepDescription: {
+                        type: 'string',
+                        description: 'Description of what this step accomplished'
+                    },
+                    expectedOutcome: {
+                        type: 'string',
+                        description: 'What the user should expect to see in this screenshot'
+                    },
+                    assertionPoints: {
+                        type: 'array',
+                        items: { type: 'string' },
+                        description: 'Specific UI elements or states to validate in this step'
+                    },
+                    filename: {
+                        type: 'string',
+                        description: 'Custom filename for the screenshot (auto-generated if not provided)'
+                    },
+                    includePageSource: {
+                        type: 'boolean',
+                        description: 'Whether to include page source XML for detailed analysis',
+                        default: true
+                    }
+                },
+                required: ['stepNumber', 'stepDescription']
+            }
+        });
+
         // Register tool handlers
         this.registerTool('appium_connect', this.handleConnect.bind(this));
         this.registerTool('appium_disconnect', this.handleDisconnect.bind(this));
@@ -845,6 +882,7 @@ class AppiumMCPServer extends BaseMCPServer {
         this.registerTool('smart_find_and_click', this.handleSmartFindAndClick.bind(this));
         this.registerTool('analyze_screenshot', this.handleAnalyzeScreenshot.bind(this));
         this.registerTool('tap_coordinates', this.handleTapCoordinates.bind(this));
+        this.registerTool('capture_step_screenshot', this.handleCaptureStepScreenshot.bind(this));
     }
 
     async ensureConnection() {
@@ -1814,6 +1852,7 @@ class AppiumMCPServer extends BaseMCPServer {
     // Enhanced action methods with automatic state capture
     async performActionWithStateCapture(actionName, actionFunction, args) {
         let preActionCapture = null;
+        let postActionCapture = null;
         
         // Capture state before action if configured
         if (this.autoStateCapture.captureBeforeActions.includes(actionName)) {
@@ -1824,34 +1863,159 @@ class AppiumMCPServer extends BaseMCPServer {
         // Perform the actual action
         const result = await actionFunction();
 
-        // Add capture information to result if captured
+        // Capture state after action (always enabled for step-by-step verification)
+        console.log(`📸 Capturing state after ${actionName} for UI assertion...`);
+        postActionCapture = await this.captureCurrentState(`post_${actionName}`, args);
+        
+        // Add a brief delay to ensure UI has settled after action
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Prepare capture information for result
+        const captureInfo = {
+            actionName,
+            timestamp: Date.now(),
+            captureTime: new Date().toISOString()
+        };
+
+        // Initialize page source content variables in the correct scope
+        let prePageSourceContent = null;
+        let postPageSourceContent = null;
+
+        // Add pre-action capture information if available
         if (preActionCapture) {
-            // Read the page source content for immediate access
-            let pageSourceContent = null;
             try {
                 if (preActionCapture.pageSourcePath) {
-                    pageSourceContent = await fs.readFile(preActionCapture.pageSourcePath, 'utf8');
+                    prePageSourceContent = await fs.readFile(preActionCapture.pageSourcePath, 'utf8');
                 }
             } catch (error) {
-                console.warn('Could not read page source for state capture:', error.message);
+                console.warn('Could not read pre-action page source:', error.message);
             }
 
-            result.stateCapture = {
-                preActionCapture: {
-                    id: preActionCapture.id,
-                    timestamp: preActionCapture.timestamp,
-                    screenshotPath: preActionCapture.screenshotPath,
-                    pageSourcePath: preActionCapture.pageSourcePath,
-                    captureTime: preActionCapture.captureTime,
-                    // Include actual page source content
-                    pageSource: pageSourceContent,
-                    elementCount: pageSourceContent ? (pageSourceContent.match(/<[^/][^>]*>/g) || []).length : 0
-                },
-                message: `State captured before ${actionName}. Screenshot: ${preActionCapture.screenshotPath ? 'available' : 'failed'}, Page source: ${preActionCapture.pageSourcePath ? 'available' : 'failed'} (${pageSourceContent ? (pageSourceContent.match(/<[^/][^>]*>/g) || []).length : 0} elements)`
+            captureInfo.preActionCapture = {
+                id: preActionCapture.id,
+                timestamp: preActionCapture.timestamp,
+                screenshotPath: preActionCapture.screenshotPath,
+                pageSourcePath: preActionCapture.pageSourcePath,
+                captureTime: preActionCapture.captureTime,
+                pageSource: prePageSourceContent,
+                elementCount: prePageSourceContent ? (prePageSourceContent.match(/<[^/][^>]*>/g) || []).length : 0
+            };
+        }
+
+        // Add post-action capture information (for UI assertion)
+        if (postActionCapture) {
+            try {
+                if (postActionCapture.pageSourcePath) {
+                    postPageSourceContent = await fs.readFile(postActionCapture.pageSourcePath, 'utf8');
+                }
+            } catch (error) {
+                console.warn('Could not read post-action page source:', error.message);
+            }
+
+            captureInfo.postActionCapture = {
+                id: postActionCapture.id,
+                timestamp: postActionCapture.timestamp,
+                screenshotPath: postActionCapture.screenshotPath,
+                pageSourcePath: postActionCapture.pageSourcePath,
+                captureTime: postActionCapture.captureTime,
+                pageSource: postPageSourceContent,
+                elementCount: postPageSourceContent ? (postPageSourceContent.match(/<[^/][^>]*>/g) || []).length : 0,
+                uiAssertionReady: true // Flag indicating this capture is for UI assertion
+            };
+        }
+
+        // Enhance result with comprehensive capture information
+        result.stateCapture = captureInfo;
+        
+        // Create user-friendly message about captures
+        const preMsg = preActionCapture ? 
+            `Pre-action screenshot: ${preActionCapture.screenshotPath ? 'captured' : 'failed'}` : 
+            'Pre-action capture: disabled';
+        const postMsg = postActionCapture ? 
+            `Post-action screenshot: ${postActionCapture.screenshotPath ? 'captured' : 'failed'}` : 
+            'Post-action capture: failed';
+        
+        result.stateCapture.message = `${actionName} completed. ${preMsg}, ${postMsg}. Ready for UI assertion.`;
+        
+        // Add screenshot analysis helper
+        if (postActionCapture && postActionCapture.screenshotPath) {
+            result.stateCapture.uiAssertionInfo = {
+                screenshotAvailable: true,
+                screenshotPath: postActionCapture.screenshotPath,
+                pageSourceAvailable: !!postActionCapture.pageSourcePath,
+                recommendedAssertions: this.generateUIAssertionRecommendations(actionName, postPageSourceContent),
+                nextStepGuidance: `Screenshot saved for step verification. Review the UI state and proceed with next action or use verify_action_result to validate expected changes.`
             };
         }
 
         return result;
+    }
+
+    // Generate UI assertion recommendations based on action type
+    generateUIAssertionRecommendations(actionName, pageSource) {
+        const recommendations = [];
+        
+        switch (actionName) {
+            case 'click_element':
+            case 'smart_find_and_click':
+                recommendations.push(
+                    'Verify the target element was successfully clicked',
+                    'Check if expected page/screen transition occurred',
+                    'Look for loading indicators or progress animations',
+                    'Confirm any expected UI changes are visible'
+                );
+                break;
+                
+            case 'type_text':
+                recommendations.push(
+                    'Verify text was successfully entered in the target field',
+                    'Check if input validation messages appeared',
+                    'Confirm cursor position or field focus',
+                    'Look for auto-suggestions or dropdown menus'
+                );
+                break;
+                
+            case 'swipe':
+                recommendations.push(
+                    'Verify scrolling/swiping changed the visible content',
+                    'Check if new elements became visible',
+                    'Confirm expected elements are now accessible',
+                    'Look for scroll indicators or page position changes'
+                );
+                break;
+                
+            case 'scroll_to_element':
+                recommendations.push(
+                    'Verify target element is now visible on screen',
+                    'Check if element is properly positioned and accessible',
+                    'Confirm scrolling stopped at correct position',
+                    'Look for any elements that may be partially obscured'
+                );
+                break;
+                
+            default:
+                recommendations.push(
+                    'Verify the action completed successfully',
+                    'Check for any error messages or warnings',
+                    'Confirm UI state matches expected outcome',
+                    'Look for visual indicators of action completion'
+                );
+        }
+        
+        // Add dynamic recommendations based on page content
+        if (pageSource) {
+            if (pageSource.includes('error') || pageSource.includes('Error')) {
+                recommendations.unshift('⚠️ ERROR DETECTED: Check for error messages or dialogs');
+            }
+            if (pageSource.includes('loading') || pageSource.includes('Loading')) {
+                recommendations.push('📋 Loading state detected: Wait for completion before next action');
+            }
+            if (pageSource.includes('alert') || pageSource.includes('Alert')) {
+                recommendations.unshift('🚨 ALERT DETECTED: Handle popup or alert dialog');
+            }
+        }
+        
+        return recommendations;
     }
 
     async handleWaitForElement(args) {
@@ -3818,6 +3982,340 @@ class AppiumMCPServer extends BaseMCPServer {
         } catch (error) {
             return this.createErrorResponse('tap_coordinates', error);
         }
+    }
+
+    async handleCaptureStepScreenshot(args) {
+        try {
+            await this.ensureConnection();
+
+            const { 
+                stepNumber, 
+                stepDescription, 
+                expectedOutcome, 
+                assertionPoints = [], 
+                filename,
+                includePageSource = true 
+            } = args;
+
+            console.log(`📸 Capturing step ${stepNumber} screenshot: ${stepDescription}`);
+
+            const timestamp = Date.now();
+            const stepId = `step_${stepNumber}_${timestamp}`;
+            
+            // Generate filename if not provided
+            const screenshotFilename = filename || `step_${stepNumber}_${stepDescription.replace(/[^a-zA-Z0-9]/g, '_')}_${timestamp}.png`;
+            
+            // Ensure capture directory exists
+            await fs.mkdir(this.autoStateCapture.outputDir, { recursive: true });
+
+            // Capture screenshot
+            let screenshotPath = null;
+            let screenshotBase64 = null;
+            try {
+                screenshotBase64 = await this.driver.takeScreenshot();
+                screenshotPath = path.join(this.autoStateCapture.outputDir, screenshotFilename);
+                await fs.writeFile(screenshotPath, screenshotBase64, 'base64');
+                console.log(`✅ Step screenshot saved: ${screenshotPath}`);
+            } catch (error) {
+                console.warn('Failed to capture step screenshot:', error.message);
+                throw new Error(`Screenshot capture failed: ${error.message}`);
+            }
+
+            // Capture page source if requested
+            let pageSourcePath = null;
+            let pageSourceContent = null;
+            let elementCount = 0;
+            if (includePageSource) {
+                try {
+                    pageSourceContent = await this.driver.getPageSource();
+                    const pageSourceFilename = `step_${stepNumber}_page_source_${timestamp}.xml`;
+                    pageSourcePath = path.join(this.autoStateCapture.outputDir, pageSourceFilename);
+                    await fs.writeFile(pageSourcePath, pageSourceContent, 'utf8');
+                    elementCount = (pageSourceContent.match(/<[^/][^>]*>/g) || []).length;
+                    console.log(`✅ Step page source saved: ${pageSourcePath} (${elementCount} elements)`);
+                } catch (error) {
+                    console.warn('Failed to capture step page source:', error.message);
+                }
+            }
+
+            // Get current window info for context
+            let windowInfo = {};
+            try {
+                windowInfo = await this.driver.getWindowSize();
+            } catch (error) {
+                console.warn('Failed to get window info:', error.message);
+            }
+
+            // Get current app context
+            let appContext = {};
+            try {
+                if (this.currentPlatform === 'Android') {
+                    appContext.currentActivity = await this.driver.getCurrentActivity();
+                    appContext.currentPackage = await this.driver.getCurrentPackage();
+                } else if (this.currentPlatform === 'iOS') {
+                    appContext.bundleId = await this.driver.getCapabilities().bundleId;
+                }
+            } catch (error) {
+                console.warn('Failed to get app context:', error.message);
+            }
+
+            // Generate dynamic assertion recommendations based on page content
+            const dynamicAssertions = this.generateStepAssertionRecommendations(
+                stepNumber, 
+                stepDescription, 
+                pageSourceContent,
+                assertionPoints
+            );
+
+            // Analyze current UI state for assertion guidance
+            const uiAnalysis = this.analyzeUIStateForAssertions(pageSourceContent, expectedOutcome);
+
+            const stepCapture = {
+                stepNumber,
+                stepDescription,
+                expectedOutcome,
+                assertionPoints,
+                id: stepId,
+                timestamp,
+                captureTime: new Date(timestamp).toISOString(),
+                platform: this.currentPlatform,
+                screenshotPath,
+                screenshotFilename,
+                pageSourcePath,
+                pageSourceContent: includePageSource ? pageSourceContent : null,
+                elementCount,
+                windowInfo,
+                appContext,
+                assertionGuidance: {
+                    userDefinedAssertions: assertionPoints,
+                    recommendedAssertions: dynamicAssertions,
+                    uiStateAnalysis: uiAnalysis,
+                    nextStepGuidance: this.generateNextStepGuidance(stepNumber, stepDescription, pageSourceContent)
+                }
+            };
+
+            // Add to recent captures
+            this.autoStateCapture.lastCaptures.push({
+                id: stepId,
+                timestamp,
+                actionName: `step_${stepNumber}`,
+                platform: this.currentPlatform,
+                screenshotPath,
+                pageSourcePath,
+                captureTime: stepCapture.captureTime
+            });
+
+            // Maintain retention limit
+            if (this.autoStateCapture.lastCaptures.length > this.autoStateCapture.retainCount) {
+                this.autoStateCapture.lastCaptures.shift();
+            }
+
+            return this.createSuccessResponse(
+                `📸 Step ${stepNumber} screenshot captured: ${stepDescription}`,
+                {
+                    stepCapture,
+                    screenshotAvailable: !!screenshotPath,
+                    pageSourceAvailable: !!pageSourcePath,
+                    assertionReady: true,
+                    files: {
+                        screenshot: screenshotPath,
+                        pageSource: pageSourcePath
+                    }
+                }
+            );
+
+        } catch (error) {
+            return this.createErrorResponse('capture_step_screenshot', error);
+        }
+    }
+
+    // Generate step-specific assertion recommendations
+    generateStepAssertionRecommendations(stepNumber, stepDescription, pageSource, userAssertions) {
+        const recommendations = [];
+
+        // Add user-defined assertions first
+        if (userAssertions && userAssertions.length > 0) {
+            recommendations.push(...userAssertions.map(assertion => `USER DEFINED: ${assertion}`));
+        }
+
+        // Generate recommendations based on step description keywords
+        const desc = stepDescription.toLowerCase();
+        
+        if (desc.includes('login') || desc.includes('sign in')) {
+            recommendations.push(
+                'Verify login form elements are visible and accessible',
+                'Check if username/email and password fields are present',
+                'Confirm login button is clickable',
+                'Look for any authentication error messages'
+            );
+        }
+
+        if (desc.includes('navigate') || desc.includes('open') || desc.includes('go to')) {
+            recommendations.push(
+                'Verify correct page/screen has loaded',
+                'Check page title or header content',
+                'Confirm expected navigation elements are visible',
+                'Look for loading indicators or errors'
+            );
+        }
+
+        if (desc.includes('enter') || desc.includes('type') || desc.includes('input')) {
+            recommendations.push(
+                'Verify text input was successful',
+                'Check field validation states',
+                'Confirm cursor position or field focus',
+                'Look for input suggestions or dropdowns'
+            );
+        }
+
+        if (desc.includes('click') || desc.includes('tap') || desc.includes('press')) {
+            recommendations.push(
+                'Verify button/element was successfully activated',
+                'Check for expected UI response or feedback',
+                'Confirm any state changes occurred',
+                'Look for loading or transition animations'
+            );
+        }
+
+        if (desc.includes('scroll') || desc.includes('swipe')) {
+            recommendations.push(
+                'Verify content scrolled and new elements are visible',
+                'Check scroll position indicators',
+                'Confirm target content is now accessible',
+                'Look for end-of-content indicators'
+            );
+        }
+
+        if (desc.includes('submit') || desc.includes('send') || desc.includes('confirm')) {
+            recommendations.push(
+                'Verify form submission was successful',
+                'Check for confirmation messages or feedback',
+                'Look for error messages or validation issues',
+                'Confirm expected post-submission state'
+            );
+        }
+
+        // Add dynamic recommendations based on page content analysis
+        if (pageSource) {
+            if (pageSource.includes('error') || pageSource.includes('Error')) {
+                recommendations.unshift('🚨 ERROR DETECTED: Investigate error messages or dialogs');
+            }
+            if (pageSource.includes('loading') || pageSource.includes('Loading')) {
+                recommendations.push('⏳ LOADING STATE: Wait for completion before proceeding');
+            }
+            if (pageSource.includes('success') || pageSource.includes('Success')) {
+                recommendations.push('✅ SUCCESS INDICATOR: Confirm success message details');
+            }
+        }
+
+        // Add step-specific context
+        recommendations.push(`STEP ${stepNumber} CONTEXT: Validate this step aligns with overall workflow goals`);
+
+        return recommendations;
+    }
+
+    // Analyze UI state for assertion guidance
+    analyzeUIStateForAssertions(pageSource, expectedOutcome) {
+        const analysis = {
+            elementsDetected: 0,
+            interactiveElements: 0,
+            errorIndicators: [],
+            successIndicators: [],
+            loadingStates: [],
+            formElements: [],
+            navigationElements: [],
+            contentSummary: ''
+        };
+
+        if (!pageSource) {
+            analysis.contentSummary = 'Page source not available for analysis';
+            return analysis;
+        }
+
+        // Count elements
+        analysis.elementsDetected = (pageSource.match(/<[^/][^>]*>/g) || []).length;
+
+        // Find interactive elements
+        const interactivePatterns = ['button', 'clickable="true"', 'input', 'textfield', 'switch'];
+        analysis.interactiveElements = interactivePatterns.reduce((count, pattern) => {
+            return count + (pageSource.toLowerCase().match(new RegExp(pattern, 'gi')) || []).length;
+        }, 0);
+
+        // Detect error indicators
+        const errorPatterns = ['error', 'failed', 'invalid', 'denied', 'unauthorized'];
+        analysis.errorIndicators = errorPatterns.filter(pattern => 
+            pageSource.toLowerCase().includes(pattern)
+        );
+
+        // Detect success indicators
+        const successPatterns = ['success', 'completed', 'confirmed', 'welcome', 'dashboard'];
+        analysis.successIndicators = successPatterns.filter(pattern => 
+            pageSource.toLowerCase().includes(pattern)
+        );
+
+        // Detect loading states
+        const loadingPatterns = ['loading', 'spinner', 'progress', 'wait'];
+        analysis.loadingStates = loadingPatterns.filter(pattern => 
+            pageSource.toLowerCase().includes(pattern)
+        );
+
+        // Find form elements
+        const formPatterns = ['edittext', 'textfield', 'input', 'form', 'submit'];
+        analysis.formElements = formPatterns.filter(pattern => 
+            pageSource.toLowerCase().includes(pattern)
+        );
+
+        // Find navigation elements
+        const navPatterns = ['navigation', 'menu', 'toolbar', 'header', 'footer'];
+        analysis.navigationElements = navPatterns.filter(pattern => 
+            pageSource.toLowerCase().includes(pattern)
+        );
+
+        // Generate content summary
+        if (expectedOutcome) {
+            analysis.contentSummary = `Expected: ${expectedOutcome}. `;
+        }
+        analysis.contentSummary += `Found ${analysis.elementsDetected} UI elements, ${analysis.interactiveElements} interactive. `;
+        
+        if (analysis.errorIndicators.length > 0) {
+            analysis.contentSummary += `⚠️ Errors: ${analysis.errorIndicators.join(', ')}. `;
+        }
+        if (analysis.successIndicators.length > 0) {
+            analysis.contentSummary += `✅ Success: ${analysis.successIndicators.join(', ')}. `;
+        }
+        if (analysis.loadingStates.length > 0) {
+            analysis.contentSummary += `⏳ Loading: ${analysis.loadingStates.join(', ')}. `;
+        }
+
+        return analysis;
+    }
+
+    // Generate guidance for next steps
+    generateNextStepGuidance(stepNumber, stepDescription, pageSource) {
+        const guidance = [];
+        
+        guidance.push(`✅ Step ${stepNumber} completed: ${stepDescription}`);
+        guidance.push(`📸 Screenshot and page source captured for validation`);
+        
+        // Analyze current state to suggest next actions
+        if (pageSource) {
+            if (pageSource.toLowerCase().includes('error')) {
+                guidance.push(`🚨 Error detected - Review error state before proceeding`);
+                guidance.push(`🔧 Consider error handling or user notification steps`);
+            } else if (pageSource.toLowerCase().includes('loading')) {
+                guidance.push(`⏳ Loading state detected - Wait for completion`);
+                guidance.push(`🕐 Consider adding wait conditions for next step`);
+            } else if (pageSource.toLowerCase().includes('success')) {
+                guidance.push(`✅ Success state detected - Ready for next step`);
+                guidance.push(`➡️ Proceed with next action in workflow`);
+            }
+        }
+        
+        guidance.push(`🔍 Use verify_action_result to validate step completion`);
+        guidance.push(`📋 Review screenshot against expected outcome`);
+        guidance.push(`➡️ Proceed to step ${stepNumber + 1} when assertions pass`);
+        
+        return guidance;
     }
 }
 
