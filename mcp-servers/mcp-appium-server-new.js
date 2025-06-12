@@ -1666,7 +1666,9 @@ class AppiumMCPServer extends BaseMCPServer {
             id: `#${selector}`,
             xpath: selector,
             className: `.${selector}`,
-            text: this.currentPlatform === 'iOS' ? `//*[@label="${selector}" or @name="${selector}" or @value="${selector}"]` : `//*[@text="${selector}"]`,
+            text: this.currentPlatform === 'iOS' ? 
+                `//*[contains(@label,"${selector}") or contains(@name,"${selector}") or contains(@value,"${selector}") or contains(@text,"${selector}")]` : 
+                `//*[contains(@text,"${selector}") or contains(@content-desc,"${selector}")]`,
             contentDescription: this.currentPlatform === 'iOS' ? `//*[@label="${selector}" or @name="${selector}"]` : `//*[@content-desc="${selector}"]`,
             accessibilityId: `~${selector}`,
             iosClassChain: selector, // iOS-specific class chain selector
@@ -1696,7 +1698,9 @@ class AppiumMCPServer extends BaseMCPServer {
             id: `#${selector}`,
             xpath: selector,
             className: `.${selector}`,
-            text: this.currentPlatform === 'iOS' ? `//*[@label="${selector}" or @name="${selector}" or @value="${selector}"]` : `//*[@text="${selector}" or @content-desc="${selector}"]`,
+            text: this.currentPlatform === 'iOS' ? 
+                `//*[contains(@label,"${selector}") or contains(@name,"${selector}") or contains(@value,"${selector}") or contains(@text,"${selector}")]` : 
+                `//*[contains(@text,"${selector}") or contains(@content-desc,"${selector}")]`,
             contentDescription: this.currentPlatform === 'iOS' ? `//*[@label="${selector}" or @name="${selector}"]` : `//*[@content-desc="${selector}"]`,
             accessibilityId: `~${selector}`,
             iosClassChain: selector, // iOS-specific class chain selector

@@ -30,6 +30,23 @@ web_automation_agent = LlmAgent(
     - Taking screenshots and generating reports
     - Handling dynamic web content and SPAs
     
+    COORDINATOR COMMUNICATION:
+    When working under the automation coordinator:
+    - Provide regular progress updates during web automation tasks
+    - Generate structured final reports with clear test outcomes
+    - Include visual evidence (screenshots) and technical details
+    - Summarize key findings, issues, and recommendations
+    - Report any failures with specific error details
+    - Ensure coordinator has complete information for final user summary
+    
+    STRUCTURED RESPONSE FORMAT:
+    When completing delegated tasks, provide:
+    1. EXECUTION SUMMARY: Overall test status (SUCCESS/PARTIAL/FAILED)
+    2. DETAILED RESULTS: Step-by-step breakdown of web automation actions
+    3. VISUAL EVIDENCE: Screenshot references and captured test evidence
+    4. TECHNICAL INSIGHTS: Browser performance and compatibility observations
+    5. NEXT STEPS: Any follow-up actions or areas requiring attention
+    
     Use Playwright tools for all web-related tasks.''',
     tools=[
         MCPToolset(
@@ -102,6 +119,12 @@ COLLABORATION WITH SPECIALIST:
 - Provide clear handoff documentation
 - Ensure plans are executable and measurable''',
     tools=[
+        MCPToolset(
+            connection_params=StdioServerParameters(
+                command=NODE_PATH,
+                args=[os.path.join(TARGET_FOLDER_PATH, 'mcp-agent-mobile-planner.js')]
+            ),
+        ),
         MCPToolset(
             connection_params=StdioServerParameters(
                 command=NODE_PATH,
@@ -185,12 +208,36 @@ ASSERTION AND VALIDATION:
     - UI STATE VERIFICATION: Compare before/after screenshots to validate action outcomes
 
 REPORT GENERATION:
-    - Generate detailed step-by-step execution reports
-    - Document assertion results for each action
-    - Create concise scenario summaries
+    - Generate detailed step-by-step execution reports with visual evidence
+    - Document assertion results for each action with screenshot references
+    - Create concise scenario summaries with pass/fail status
     - Provide comprehensive test execution analytics
-    - Include screenshots and state captures for key steps
+    - Include screenshots and state captures for key steps  
     - Generate actionable insights and recommendations
+
+COORDINATOR COMMUNICATION:
+When working under the automation coordinator:
+    - Provide regular progress updates during execution
+    - Generate structured final reports with clear outcomes
+    - Include visual evidence (screenshots) and technical details
+    - Summarize key findings and recommendations
+    - Report any issues or failures with specific details
+    - **CRITICAL: When task is complete, transfer results back to coordinator**
+
+STRUCTURED RESPONSE FORMAT:
+When completing delegated tasks, provide:
+1. EXECUTION SUMMARY: Overall status (SUCCESS/PARTIAL/FAILED) with brief description
+2. DETAILED RESULTS: Step-by-step breakdown with assertion outcomes
+3. VISUAL EVIDENCE: Screenshot references and key state captures
+4. TECHNICAL INSIGHTS: Performance observations and recommendations
+5. NEXT STEPS: Any follow-up actions or areas requiring attention
+
+RETURN TO COORDINATOR:
+When work is complete, provide structured results for coordinator synthesis:
+- Complete task execution with comprehensive results
+- Generate final summary with structured format (EXECUTION SUMMARY, DETAILED RESULTS, etc.)
+- Include visual evidence and technical insights
+- The coordinator will automatically receive results and provide final synthesis to user
 
 EXECUTION WORKFLOW:
 MANDATORY: Before any automation execution, follow this pattern:
@@ -409,7 +456,7 @@ ENHANCED AUTOMATION CAPABILITIES:
     - After successful task step completion: Reset page source calls to 0/3
     - After full task completion: Reset total actions to 0/20
     - Always announce counter resets: "✅ Task completed - Counters reset"
-    - Start each new task with fresh counters: "🔄 New task - Counters: 0/20, 0/5, 0/3, 0/3"
+    - Start each new task with fresh counters: "🔄 New task - Counters: 0/30, 0/5, 0/3, 0/3"
     
     NETWORK RESILIENCE:
     - If you encounter network errors, wait 5 seconds and retry
@@ -968,6 +1015,15 @@ code_management_agent = LlmAgent(
     - Track and report completion status explicitly
     - Only stop when user confirms task completion or explicitly asks to stop
     
+    COORDINATOR COMMUNICATION:
+    When working under the automation coordinator:
+    - Provide regular progress updates during code analysis tasks
+    - Generate structured final reports with clear analysis outcomes
+    - Include technical details and code quality metrics
+    - Summarize key findings, issues, and recommendations
+    - Report any failures with specific error details
+    - Ensure coordinator has complete information for final user summary
+    
     Use code analysis and modification tools for all development tasks.''',
     tools=[
         MCPToolset(
@@ -1004,6 +1060,15 @@ file_operations_agent = LlmAgent(
     - Track and report completion status for each file/operation
     - Continue until all requested operations are successfully completed
     
+    COORDINATOR COMMUNICATION:
+    When working under the automation coordinator:
+    - Provide regular progress updates during file operations
+    - Generate structured final reports with clear operation outcomes
+    - Include file system details and processing results
+    - Summarize key findings, issues, and recommendations
+    - Report any failures with specific error details
+    - Ensure coordinator has complete information for final user summary
+    
     Use filesystem tools for all file-related tasks.''',
     tools=[
         MCPToolset(
@@ -1035,6 +1100,15 @@ test_execution_agent = LlmAgent(
     - Continue until all test suites/commands are executed and results are available
     - Never stop mid-execution unless explicitly instructed
     
+    COORDINATOR COMMUNICATION:
+    When working under the automation coordinator:
+    - Provide regular progress updates during test execution
+    - Generate structured final reports with clear test outcomes
+    - Include detailed test results and performance metrics
+    - Summarize key findings, issues, and recommendations
+    - Report any failures with specific error details and logs
+    - Ensure coordinator has complete information for final user summary
+    
     Use test execution and terminal tools for all testing tasks.''',
     tools=[
         MCPToolset(
@@ -1065,6 +1139,15 @@ advanced_tools_agent = LlmAgent(
     - Track completion status across different systems/integrations
     - Only conclude when all requested automation tasks are finished
     
+    COORDINATOR COMMUNICATION:
+    When working under the automation coordinator:
+    - Provide regular progress updates during complex automation tasks
+    - Generate structured final reports with clear workflow outcomes
+    - Include technical details and system integration results
+    - Summarize key findings, issues, and recommendations
+    - Report any failures with specific error details
+    - Ensure coordinator has complete information for final user summary
+    
     Use advanced tools for complex or specialized tasks.''',
     tools=[
         MCPToolset(
@@ -1084,11 +1167,15 @@ coordinator_agent = LlmAgent(
     description='Main coordinator for comprehensive automation tasks',
     instruction='''You are the automation coordinator. Your job is to analyze user requests and delegate tasks to the appropriate specialist agents.
 
-Available specialists:
-- web_automation_specialist: For browser, web testing, and web scraping tasks
+TRANSFER-BASED ARCHITECTURE:
+You can transfer control to specialist agents who will complete tasks and return results to you.
+Use the built-in agent transfer mechanism to delegate work and receive structured responses.
+
+Available specialists for delegation:
+- web_automation_specialist: For browser automation, web testing, and web scraping tasks
 - mobile_automation_specialist: For mobile device automation and app testing using Appium
-  ↳ Has mobile_automation_planner tool for integrated test planning and execution
-- code_management_specialist: For code analysis, modification, and development
+  ↳ Has integrated mobile_automation_planner for test planning and execution
+- code_management_specialist: For code analysis, modification, and development tasks  
 - file_operations_specialist: For file system operations and data processing
 - test_execution_specialist: For running tests and terminal operations
 - advanced_tools_specialist: For complex or specialized automation tasks
@@ -1096,27 +1183,20 @@ Available specialists:
 ENHANCED MOBILE AUTOMATION WORKFLOW:
 When handling mobile testing requests:
 1. Transfer to mobile_automation_specialist for mobile testing scenarios
-2. The mobile_automation_specialist will seamlessly:
+2. The specialist will automatically:
    a. Use mobile_automation_planner tool to create detailed action plans with assertions
-   b. Execute steps using Appium automation tools
+   b. Execute steps using Appium automation tools with screenshot automation
    c. Generate comprehensive reports with evidence
-
-MOBILE AUTOMATION CAPABILITIES:
-- Integrated planning and execution in single agent using AgentTool pattern
-- Converts user instructions into detailed executable action plans
-- Creates comprehensive assertions for each testing step
-- Executes mobile automation with step-by-step validation
-- Generates detailed reports with evidence and insights
-- Handles both Android and iOS device automation
-- Provides seamless workflow: plan → execute → report
+3. Specialist returns results back to coordinator
+4. Coordinator provides final summary to user
 
 COORDINATION PRINCIPLES:
 1. Analyze what type of automation is needed
 2. Determine which specialist(s) would be best suited
-3. Transfer to the appropriate specialist using transfer_to_agent()
-4. If multiple specialists are needed, coordinate between them
+3. Transfer control to the appropriate specialist
+4. Receive results and coordinate additional work if needed
 5. ENSURE ALL PARTS OF THE REQUEST ARE COMPLETED before concluding
-6. Track overall progress and ensure no tasks are left incomplete
+6. Track overall progress and provide final status to user
 
 TASK COMPLETION TRACKING:
 - Monitor progress across all delegated tasks
@@ -1125,23 +1205,33 @@ TASK COMPLETION TRACKING:
 - Provide overall status updates to the user
 - Only conclude when ALL requested automation is complete
 
-Examples:
-- "Test a web application" → transfer to web_automation_specialist  
-- "Connect to Android device" → transfer to mobile_automation_specialist
-- "Test mobile app login flow" → transfer to mobile_automation_specialist (will auto-plan and execute)
-- "Create mobile test plan for user registration" → transfer to mobile_automation_specialist
-- "Automate mobile payment workflow with assertions" → transfer to mobile_automation_specialist
-- "Connect to iPhone device" → transfer to mobile_automation_specialist
-- "Mobile device automation" → transfer to mobile_automation_specialist
-- "Analyze code quality" → transfer to code_management_specialist
-- "Process log files" → transfer to file_operations_specialist
-- "Run test suite" → transfer to test_execution_specialist
-- "Complex workflow automation" → transfer to advanced_tools_specialist
+TRANSFER WORKFLOW EXAMPLES:
+- "Test a web application" → Delegate to web_automation_specialist → Receive test results → Summarize for user
+- "Connect to Android device and test login" → Delegate to mobile_automation_specialist → Receive automation report → Provide final status
+- "Analyze code quality" → Delegate to code_management_specialist → Receive analysis report → Present recommendations
+- "Process log files" → Delegate to file_operations_specialist → Receive processed data → Summarize findings
+- "Run test suite" → Delegate to test_execution_specialist → Receive test results → Report outcomes
+- "Complex automation workflow" → Delegate to advanced_tools_specialist → Receive workflow results → Coordinate next steps
+
+DELEGATION STRATEGY:
+1. Clearly explain to the user what you're delegating and why
+2. Transfer control to the appropriate specialist with clear task description
+3. Wait for specialist to complete work and return results
+4. Process returned results and coordinate any additional work needed
+5. Provide comprehensive final report to user
+
+MULTI-SPECIALIST COORDINATION:
+When tasks require multiple specialists:
+1. Break down the overall task into specialist-specific components
+2. Delegate each component to the appropriate specialist in sequence
+3. Collect results from each specialist
+4. Coordinate handoffs between specialists if needed
+5. Synthesize all results into a comprehensive final report
 
 NEVER STOP COORDINATION until all requested tasks across all specialists are completed.
-Always explain why you're transferring to a specific specialist and what you expect them to accomplish.''',
+Always explain what work is being delegated and provide final comprehensive results.''',
     
-    # Define the hierarchy - coordinator has all specialists as sub-agents
+    # Use sub_agents for clean hierarchy-based transfers
     sub_agents=[
         web_automation_agent,
         mobile_automation_agent, 
@@ -1152,34 +1242,34 @@ Always explain why you're transferring to a specific specialist and what you exp
     ],
 )
 
-# Alternative: Sequential Pipeline for Complex Workflows
-# ====================================================
-def create_testing_pipeline():
-    """Create a sequential pipeline for comprehensive testing workflows"""
-    return SequentialAgent(
-        name='comprehensive_testing_pipeline',
-        sub_agents=[
-            file_operations_agent,  # Setup test environment
-            code_management_agent,  # Analyze/prepare code
-            test_execution_agent,   # Run tests
-            web_automation_agent,   # Web-based testing
-            mobile_automation_agent, # Mobile testing (Appium)
-            advanced_tools_agent,   # Generate reports
-        ],
-    )
+# # Alternative: Sequential Pipeline for Complex Workflows
+# # ====================================================
+# def create_testing_pipeline():
+#     """Create a sequential pipeline for comprehensive testing workflows"""
+#     return SequentialAgent(
+#         name='comprehensive_testing_pipeline',
+#         sub_agents=[
+#             file_operations_agent,  # Setup test environment
+#             code_management_agent,  # Analyze/prepare code
+#             test_execution_agent,   # Run tests
+#             web_automation_agent,   # Web-based testing
+#             mobile_automation_agent, # Mobile testing (Appium)
+#             advanced_tools_agent,   # Generate reports
+#         ],
+#     )
 
-# Alternative: Parallel Information Gathering
-# ==========================================
-def create_parallel_analysis():
-    """Create parallel analysis for multi-domain assessment"""
-    return ParallelAgent(
-        name='parallel_analysis_system',
-        sub_agents=[
-            code_management_agent,   # Analyze code quality
-            file_operations_agent,   # Analyze file structure
-            test_execution_agent,    # Run system checks
-        ],
-    )
+# # Alternative: Parallel Information Gathering
+# # ==========================================
+# def create_parallel_analysis():
+#     """Create parallel analysis for multi-domain assessment"""
+#     return ParallelAgent(
+#         name='parallel_analysis_system',
+#         sub_agents=[
+#             code_management_agent,   # Analyze code quality
+#             file_operations_agent,   # Analyze file structure
+#             test_execution_agent,    # Run system checks
+#         ],
+#     )
 
 # Main Multi-Agent System
 # =======================
