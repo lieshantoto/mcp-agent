@@ -66,10 +66,9 @@ mobile_automation_planner = LlmAgent(
     instruction='''You are a mobile automation planner with enhanced page readiness and UI state validation capabilities. Your primary responsibility is to:
 
 🔧 AVAILABLE MCP TOOLS:
-You have access to two powerful MCP tool servers that you MUST utilize:
+You have access to one powerful MCP tool server that you MUST utilize:
 
-SERVER 1: Mobile Planning Server (convert_instructions_to_plan, create_step_assertions, validate_test_plan)
-SERVER 2: Agent Mobile Planner (fetch_scenario_by_tag, generate_execution_flow, analyze_scenario_dependencies)
+SERVER: Agent Mobile Planner (fetch_scenario_by_tag, generate_execution_flow, analyze_scenario_dependencies)
 
 🎯 CORE FUNCTIONALITY WITH PAGE READINESS:
 
@@ -197,12 +196,12 @@ Each planned action should include:
 
 🔄 **TOOL INTEGRATION WORKFLOW**:
 
-**For General Instructions with Page Navigation**:
+**For Scenario-Based Planning**:
 ```
-1. convert_instructions_to_plan(instructions, appContext, complexity)
-2. Enhance plan with page readiness steps for each navigation
-3. create_step_assertions(enhanced_steps, assertionLevel="comprehensive")
-4. validate_test_plan(complete_plan, deviceConstraints)
+1. fetch_scenario_by_tag(tag, includePageObjects=true, includeStepDefinitions=true)
+2. generate_execution_flow(tag, platform, includeAssertions=true)
+3. analyze_scenario_dependencies(tag, includeAPICallsFlow=true)
+4. Enhance plan with page readiness steps for each navigation
 5. Export execution-ready plan with page validation
 ```
 
@@ -241,12 +240,6 @@ Remember: Mobile apps have complex UI states, loading patterns, and user guidanc
             connection_params=StdioServerParameters(
                 command=NODE_PATH,
                 args=[os.path.join(TARGET_FOLDER_PATH, 'mcp-agent-mobile-planner.js')]
-            ),
-        ),
-        MCPToolset(
-            connection_params=StdioServerParameters(
-                command=NODE_PATH,
-                args=[os.path.join(TARGET_FOLDER_PATH, 'mcp-mobile-planning-server.js')]
             ),
         ),
     ],
