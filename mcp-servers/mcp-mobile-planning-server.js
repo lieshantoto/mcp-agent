@@ -48,6 +48,9 @@ class MobileAutomationPlanningServer extends BaseMCPServer {
             riskAssessment: 'object',
             estimatedDuration: 'number'
         };
+
+        // Register tools and their handlers
+        this.registerTools();
     }
 
     registerTools() {
@@ -194,6 +197,13 @@ class MobileAutomationPlanningServer extends BaseMCPServer {
                 required: ['testPlan']
             }
         });
+        
+        // Register tool handlers
+        this.registerTool('convert_instructions_to_plan', this.handleConvertInstructionsToPlan.bind(this));
+        this.registerTool('create_step_assertions', this.handleCreateStepAssertions.bind(this));
+        this.registerTool('validate_test_plan', this.handleValidateTestPlan.bind(this));
+        this.registerTool('generate_test_template', this.handleGenerateTestTemplate.bind(this));
+        this.registerTool('export_test_plan', this.handleExportTestPlan.bind(this));
     }
 
     async handleConvertInstructionsToPlan(args) {
