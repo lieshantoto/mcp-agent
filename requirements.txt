@@ -1,0 +1,41 @@
+# MCP Agent - Python Dependencies
+# =================================
+
+# Google ADK for multi-agent system
+google-adk>=1.0.0
+
+# Data processing and analysis
+pandas>=1.3.0
+numpy>=1.21.0
+
+# HTTP requests and API testing
+requests>=2.25.0
+aiohttp>=3.8.0
+
+# Configuration and environment
+python-dotenv>=0.19.0
+pyyaml>=6.0
+
+# Testing frameworks
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-html>=3.1.0
+
+# Logging and debugging
+colorlog>=6.7.0
+rich>=12.0.0
+
+# Optional: Jupyter for analysis and debugging
+jupyter>=1.0.0
+ipykernel>=6.0.0
+
+# Optional: Additional automation libraries
+selenium>=4.0.0
+beautifulsoup4>=4.10.0
+
+# Optional: Data visualization
+matplotlib>=3.5.0
+seaborn>=0.11.0
+
+# Optional: Machine learning for test analysis
+scikit-learn>=1.1.0
