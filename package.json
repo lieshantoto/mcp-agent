@@ -1,0 +1,64 @@
+{
+  "name": "mcp-agent",
+  "version": "1.0.0",
+  "description": "Mobile & Web Automation Framework with Model Context Protocol",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "install:all": "npm run install:servers && npm run install:python",
+    "install:servers": "cd mcp-servers && npm install",
+    "install:python": "pip install -r requirements.txt",
+    "setup": "chmod +x install.sh && ./install.sh",
+    "start:appium-server": "cd mcp-servers && npm run start:appium",
+    "start:filesystem-server": "cd mcp-servers && npm run start:filesystem",
+    "start:test-server": "cd mcp-servers && npm run start:test",
+    "start:all-servers": "concurrently \"npm run start:appium-server\" \"npm run start:filesystem-server\" \"npm run start:test-server\"",
+    "test:servers": "cd mcp-servers && npm test",
+    "test:agents": "cd multi_tool_agent && python -m pytest",
+    "lint": "eslint mcp-servers/**/*.js",
+    "format": "prettier --write mcp-servers/**/*.js",
+    "clean": "rm -rf node_modules mcp-servers/node_modules venv automation-state-captures/temp",
+    "docs": "echo 'See README.md for documentation'",
+    "health-check": "node scripts/health-check.js"
+  },
+  "keywords": [
+    "automation",
+    "testing",
+    "mobile",
+    "web",
+    "mcp",
+    "appium",
+    "playwright",
+    "agents"
+  ],
+  "author": "MCP Agent Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=7.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/your-username/mcp-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-username/mcp-agent/issues"
+  },
+  "homepage": "https://github.com/your-username/mcp-agent#readme",
+  "devDependencies": {
+    "concurrently": "^7.6.0",
+    "eslint": "^8.0.0",
+    "prettier": "^2.8.0"
+  },
+  "optionalDependencies": {
+    "appium": "^2.0.0"
+  },
+  "directories": {
+    "test": "features",
+    "docs": "docs"
+  },
+  "config": {
+    "appium_port": "4723",
+    "test_timeout": "30000"
+  }
+}
